@@ -259,6 +259,8 @@ def run_benchmark(
             "ss_vel_rmse": float(np.sqrt(np.mean(ss_v_err**2))),
             "diff": diff,
             "t_arr": t_arr,
+            "p_err": p_err,
+            "v_err": v_err,
         }
 
     met_a = calc_metrics(log_a_time, log_a_err_pos, log_a_err_vel, log_a_state, log_a_gt)
@@ -389,6 +391,8 @@ def run_benchmark(
 
     if show_plot:
         plt.show()
+    else:
+        plt.close(fig)
 
     return {
         "mode_a": met_a,
