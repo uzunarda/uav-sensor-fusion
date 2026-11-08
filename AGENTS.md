@@ -44,24 +44,35 @@ $$F(\Delta t) = \text{blkdiag}(F_{1D}, F_{1D}, F_{1D}), \quad Q(\Delta t) = \tex
 Burada $q_c$ hedef manevralarını temsil eden sürekli zaman ivme spektral yoğunluğudur ($m^2/s^3$).
 
 ### 3.2. Doğrusal Olmayan Ölçüm Modelleri ve Analitik Jacobiler
+
 Sensörler İHA'ya bağıl hedef konumunu ($\Delta x = x_{tgt} - x_{uav}$, $\Delta y = y_{tgt} - y_{uav}$, $\Delta z = z_{tgt} - z_{uav}$) ölçer:
 
-1. **Radar Sensörü (10 Hz, Range):**
-   $$h_{radar}(\mathbf{x}) = r = \sqrt{\Delta x^2 + \Delta y^2 + \Delta z^2}$$
-   $$H_{radar} = \frac{\partial h}{\partial \mathbf{x}} = \begin{bmatrix} \frac{\Delta x}{r} & 0 & \frac{\Delta y}{r} & 0 & \frac{\Delta z}{r} & 0 \end{bmatrix}$$
+#### Radar Sensörü (10 Hz, Menzil / Range)
 
-2. **Kamera / EO Sensörü (30 Hz, Azimuth & Elevation):**
-   $$\rho = \sqrt{\Delta x^2 + \Delta y^2}, \quad r = \sqrt{\rho^2 + \Delta z^2}$$
-   $$h_{cam}(\mathbf{x}) = \begin{bmatrix} \psi \\ \lambda \end{bmatrix} = \begin{bmatrix} \text{atan2}(\Delta y, \Delta x) \\ \text{atan2}(-\Delta z, \rho) \end{bmatrix}$$
-   $$H_{cam} = \begin{bmatrix} -\frac{\Delta y}{\rho^2} & 0 & \frac{\Delta x}{\rho^2} & 0 & 0 & 0 \\ \frac{\Delta x \Delta z}{r^2 \rho} & 0 & \frac{\Delta y \Delta z}{r^2 \rho} & 0 & -\frac{\rho}{r^2} & 0 \end{bmatrix}$$
-   - **Açı Sarmalama (Angle Unwrapping):** Azimut kalıntısı $\tilde{y}_\psi$ hesaplanırken açı $-\pi$ ile $+\pi$ arasına sarılmalıdır:
-     ```python
-     y[0, 0] = (y[0, 0] + np.pi) % (2.0 * np.pi) - np.pi
-     ```
+$$h_{radar}(\mathbf{x}) = r = \sqrt{\Delta x^2 + \Delta y^2 + \Delta z^2}$$
+
+$$H_{radar} = \frac{\partial h}{\partial \mathbf{x}} = \begin{bmatrix} \frac{\Delta x}{r} & 0 & \frac{\Delta y}{r} & 0 & \frac{\Delta z}{r} & 0 \end{bmatrix}$$
+
+#### Kamera / EO Sensörü (30 Hz, Azimut & Elevasyon)
+
+Yatay menzil $\rho = \sqrt{\Delta x^2 + \Delta y^2}$ ve 3B menzil $r = \sqrt{\rho^2 + \Delta z^2}$ olmak üzere:
+
+$$h_{cam}(\mathbf{x}) = \begin{bmatrix} \psi \\ \lambda \end{bmatrix} = \begin{bmatrix} \text{atan2}(\Delta y, \Delta x) \\ \text{atan2}(-\Delta z, \rho) \end{bmatrix}$$
+
+$$H_{cam} = \begin{bmatrix} -\frac{\Delta y}{\rho^2} & 0 & \frac{\Delta x}{\rho^2} & 0 & 0 & 0 \\ \frac{\Delta x \Delta z}{r^2 \rho} & 0 & \frac{\Delta y \Delta z}{r^2 \rho} & 0 & -\frac{\rho}{r^2} & 0 \end{bmatrix}$$
+
+**Açı Sarmalama (Angle Unwrapping):** Azimut kalıntısı $\tilde{y}_\psi$ hesaplanırken açı $-\pi$ ile $+\pi$ arasına sarılmalıdır:
+
+```python
+y[0, 0] = (y[0, 0] + np.pi) % (2.0 * np.pi) - np.pi
+```
 
 ### 3.3. Joseph-Formu Kovaryans Güncellemesi
+
 Filtre matrisinin her zaman simetrik ve pozitif yarı-tanımlı (positive semi-definite) kalmasını garantilemek için standart güncelleme yerine **Joseph Formu** uygulanır:
+
 $$P_k = (I - K_k H_k) P_{k|k-1} (I - K_k H_k)^T + K_k R_k K_k^T$$
+
 Ayrıca her adımdan sonra simetri zorlanır: $P = \frac{1}{2}(P + P^T)$.
 
 ### 3.4. Asenkron Öncelik Kuyruğu ve OOSM Rollback/Replay Motoru

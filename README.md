@@ -71,22 +71,40 @@ $$\mathbf{F}_{1D}(\Delta t) = \begin{bmatrix} 1 & \Delta t \\ 0 & 1 \end{bmatrix
 $$\mathbf{F}(\Delta t) = \text{blkdiag}(\mathbf{F}_{1D}, \mathbf{F}_{1D}, \mathbf{F}_{1D}), \quad \mathbf{Q}(\Delta t) = \text{blkdiag}(\mathbf{Q}_{1D}, \mathbf{Q}_{1D}, \mathbf{Q}_{1D})$$
 
 ### C. Doğrusal Olmayan Ölçüm Modelleri ve Analitik Jacobiler
-Sensörler İHA'ya göre bağıl hedef vektörünü ($\Delta x = x - x_{uav}$, $\Delta y = y - y_{uav}$, $\Delta z = z - z_{uav}$) gözlemler:
 
-1. **Radar Sensörü (10 Hz, Range):**
-   $$h_{radar}(\mathbf{x}) = r = \sqrt{\Delta x^2 + \Delta y^2 + \Delta z^2}$$
-   $$\mathbf{H}_{radar} = \begin{bmatrix} \frac{\Delta x}{r} & 0 & \frac{\Delta y}{r} & 0 & \frac{\Delta z}{r} & 0 \end{bmatrix}$$
+Sensörler İHA'ya göre bağıl hedef konumunu ($\Delta x = x - x_{uav}$, $\Delta y = y - y_{uav}$, $\Delta z = z - z_{uav}$) gözlemler:
 
-2. **Kamera / EO Sensörü (30 Hz, Azimuth & Elevation):**
-   Yatay menzil $\rho = \sqrt{\Delta x^2 + \Delta y^2}$ olmak üzere:
-   $$h_{cam}(\mathbf{x}) = \begin{bmatrix} \psi \\ \lambda \end{bmatrix} = \begin{bmatrix} \text{atan2}(\Delta y, \Delta x) \\ \text{atan2}(-\Delta z, \rho) \end{bmatrix}$$
-   $$\mathbf{H}_{cam} = \begin{bmatrix} -\frac{\Delta y}{\rho^2} & 0 & \frac{\Delta x}{\rho^2} & 0 & 0 & 0 \\ \frac{\Delta x \Delta z}{r^2 \rho} & 0 & \frac{\Delta y \Delta z}{r^2 \rho} & 0 & -\frac{\rho}{r^2} & 0 \end{bmatrix}$$
-   *Açı Sarmalama (Angle Unwrapping):* Azimut kalıntısı $-\pi \le \tilde{y}_\psi \le +\pi$ aralığına zorlanır.
+#### 1. Radar Sensörü (10 Hz, Menzil / Range)
+
+Mesafe ölçüm fonksiyonu ($r$ Öklid menzili):
+
+$$h_{radar}(\mathbf{x}) = r = \sqrt{\Delta x^2 + \Delta y^2 + \Delta z^2}$$
+
+Analitik Jacobi matrisi ($\mathbf{H}_{radar} \in \mathbb{R}^{1 \times 6}$):
+
+$$\mathbf{H}_{radar} = \begin{bmatrix} \frac{\Delta x}{r} & 0 & \frac{\Delta y}{r} & 0 & \frac{\Delta z}{r} & 0 \end{bmatrix}$$
+
+#### 2. Kamera / EO Sensörü (30 Hz, Azimut & Elevasyon)
+
+Yatay menzil $\rho = \sqrt{\Delta x^2 + \Delta y^2}$ olmak üzere açısal ölçüm fonksiyonu:
+
+$$h_{cam}(\mathbf{x}) = \begin{bmatrix} \psi \\ \lambda \end{bmatrix} = \begin{bmatrix} \text{atan2}(\Delta y, \Delta x) \\ \text{atan2}(-\Delta z, \rho) \end{bmatrix}$$
+
+Analitik Jacobi matrisi ($\mathbf{H}_{cam} \in \mathbb{R}^{2 \times 6}$):
+
+$$\mathbf{H}_{cam} = \begin{bmatrix} -\frac{\Delta y}{\rho^2} & 0 & \frac{\Delta x}{\rho^2} & 0 & 0 & 0 \\ \frac{\Delta x \Delta z}{r^2 \rho} & 0 & \frac{\Delta y \Delta z}{r^2 \rho} & 0 & -\frac{\rho}{r^2} & 0 \end{bmatrix}$$
+
+*Açı Sarmalama (Angle Unwrapping):* Azimut kalıntısı $\tilde{y}_\psi = z_\psi - \hat{\psi}$ açısı $-\pi$ ile $+\pi$ aralığına sarılır:
+
+$$\tilde{y}_\psi = (\tilde{y}_\psi + \pi) \pmod{2\pi} - \pi$$
 
 ### D. Joseph-Formu Kovaryans Güncellemesi
-Filtrenin sayısal yuvarlama hatalarından dolayı matris pozitif yarı-tanımlılığını kaybetmesini önlemek için standart güncelleme yerine **Joseph Formu** uygulanır:
+
+Filtrenin sayısal yuvarlama hatalarından dolayı kovaryans matrisinin simetrisini veya pozitif yarı-tanımlılığını kaybetmesini önlemek için standart güncelleme yerine **Joseph Formu** uygulanır:
 
 $$\mathbf{P}_k = (\mathbf{I} - \mathbf{K}_k \mathbf{H}_k) \mathbf{P}_{k|k-1} (\mathbf{I} - \mathbf{K}_k \mathbf{H}_k)^T + \mathbf{K}_k \mathbf{R}_k \mathbf{K}_k^T$$
+
+Ayrıca her adımdan sonra simetri zorlanır: $\mathbf{P} = \frac{1}{2}(\mathbf{P} + \mathbf{P}^T)$.
 
 ### E. Asenkron Öncelik Kuyruğu ve OOSM Rollback/Replay Motoru
 - **Asenkron Kuyruk (`simulator.py`):** Sensörler bağımsız frekanslara (10 Hz vs 30 Hz), iletim gecikmelerine ($\tau$) ve donanım jitter'ına sahiptir. Olaylar işlemciye varış anına ($t_{receive} = t_{capture} + \tau + \epsilon$) göre `heapq` ile sıralanır.
