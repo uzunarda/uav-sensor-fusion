@@ -1,14 +1,25 @@
 """
-Main execution script for Asynchronous Multi-Sensor EKF Fusion in UAV target tracking.
-Simulates a 20-second flight scenario, fuses Radar (10 Hz) and Camera (30 Hz) measurements,
-computes trajectory RMSE metrics, and visualizes tracking and velocity convergence with Matplotlib.
+Phase 2 Benchmark and Validation Script for UAV Asynchronous Sensor Fusion.
+Compares 3 Operational Modes:
+  - Mode A (Ideal - Phase 1): Zero-delay asynchronous fusion (t_receive == t_capture).
+  - Mode B (Naive EKF): Latencies, jitter & clock bias present, but filter assumes t_receive is capture epoch.
+  - Mode C (Delay-Compensated EKF): Latencies, jitter & clock bias present, Rollback / Buffer-Replay active.
+
+Computes 3D Position & Velocity RMSE, analyzes OOSM events, and generates comprehensive plots.
 """
 
 from __future__ import annotations
 import os
 import sys
 
-# Ensure repository root is on sys.path for direct script execution
+# Ensure UTF-8 output on Windows terminal
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+# Ensure repository root is on sys.path
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -17,291 +28,378 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from src.dynamics import TargetState, ConstantVelocityTrajectory
-from src.sensors import RadarSensor, CameraSensor, reconstruct_pseudo_cartesian
+from src.sensors import RadarSensor, CameraSensor
 from src.simulator import AsyncSensorEventSimulator
 from src.ekf import ExtendedKalmanFilter
 
 
-def run_simulation(
+def run_benchmark(
     sim_duration: float = 20.0,
     seed: int = 42,
-    save_fig_path: str = "results/ekf_fusion_results.png",
-    show_plot: bool = True,
+    save_fig_path: str = "results/ekf_oosm_comparison.png",
+    show_plot: bool = False,
 ) -> dict:
     """
-    Runs asynchronous sensor fusion simulation and benchmarks EKF against Ground Truth.
+    Executes identical simulation scenario under Modes A, B, and C.
 
     Args:
-        sim_duration: Total simulation time in seconds (default: 20.0s).
-        seed: Random number generator seed for deterministic reproducibility.
-        save_fig_path: Filepath where the output plot will be saved.
-        show_plot: Whether to display interactive Matplotlib window.
+        sim_duration: Simulation duration in seconds (default: 20.0s).
+        seed: Random generator seed for deterministic reproducibility.
+        save_fig_path: Path to save the multi-panel comparison figure.
+        show_plot: Whether to display interactive plot window.
 
     Returns:
-        dict: Summary metrics containing RMSE and final estimation errors.
+        dict: Detailed performance metrics for Modes A, B, and C.
     """
-    rng = np.random.default_rng(seed)
+    print("=" * 84)
+    print("      UAV ASYNCHRONOUS SENSOR FUSION - PHASE 2: OOSM & LATENCY BENCHMARK")
+    print("=" * 84)
 
-    print("=" * 78)
-    print("  ASYNCHRONOUS MULTI-SENSOR DATA FUSION & EKF TARGET TRACKING ENGINE")
-    print("=" * 78)
-
-    # 1. Define True Target Kinematics (NED Frame)
-    # Target starts at [1200m North, -800m East, -500m Down] with CV dynamics
+    # 1. Common Scenario & Target Kinematics (NED Frame)
     true_initial_state = TargetState(
         x=1200.0,
         vx=35.0,     # 35 m/s North (~126 km/h)
         y=-800.0,
         vy=25.0,     # 25 m/s East (~90 km/h)
         z=-500.0,    # 500m Altitude in NED (z is negative downwards)
-        vz=-4.0,     # Climbing at 4 m/s (NED dz/dt is negative)
+        vz=-4.0,     # Climbing at 4 m/s
     )
     trajectory = ConstantVelocityTrajectory(true_initial_state, t0=0.0)
-
-    # UAV assumed cruising at [0, 0, -150] m (150m altitude)
     uav_pos = np.array([0.0, 0.0, -150.0], dtype=np.float64)
 
-    print(f"[Dynamics] True Initial Target State: x0={true_initial_state.x:.1f}m, "
-          f"y0={true_initial_state.y:.1f}m, z0={true_initial_state.z:.1f}m")
-    print(f"           True Velocities: vx={true_initial_state.vx:.1f}m/s, "
-          f"vy={true_initial_state.vy:.1f}m/s, vz={true_initial_state.vz:.1f}m/s")
-    print(f"[Platform] UAV Reference Position: North={uav_pos[0]:.1f}m, "
-          f"East={uav_pos[1]:.1f}m, Alt={-uav_pos[2]:.1f}m")
+    # Common filter initialization parameters
+    initial_offset = np.array([80.0, -15.0, -90.0, 10.0, 40.0, 6.0])
+    x_init_guess = true_initial_state.to_vector() + initial_offset
+    P_init = np.diag([
+        150.0**2, 20.0**2,
+        150.0**2, 20.0**2,
+        100.0**2, 15.0**2,
+    ])
+    q_continuous = 0.8  # Process noise acceleration PSD (m^2/s^3)
 
-    # 2. Configure Asynchronous Sensors
-    # Radar: 10 Hz, sigma_r = 6.0 m
-    # Camera: 30 Hz, sigma_angle = 0.004 rad (~0.23 deg)
-    radar = RadarSensor(frequency_hz=10.0, sigma_r=6.0, rng=rng)
-    camera = CameraSensor(frequency_hz=30.0, sigma_psi=0.004, sigma_lambda=0.004, rng=rng)
+    print(f"[Dynamics] Hedef Başlangıç Konumu: [{true_initial_state.x:.0f}, {true_initial_state.y:.0f}, {true_initial_state.z:.0f}] m")
+    print(f"           Hedef Hız Vektörü     : [{true_initial_state.vx:.1f}, {true_initial_state.vy:.1f}, {true_initial_state.vz:.1f}] m/s")
+    print(f"[Platform] İHA Referans Konumu   : Kuzey={uav_pos[0]:.0f}m, Doğu={uav_pos[1]:.0f}m, İrtifa={-uav_pos[2]:.0f}m")
+    print("-" * 84)
 
-    simulator = AsyncSensorEventSimulator(trajectory)
-    # Introduce initial clock phase offsets to model real-world asynchronous arrivals
-    simulator.register_sensor(radar, phase_offset=0.0)
-    simulator.register_sensor(camera, phase_offset=0.0125)
+    # -------------------------------------------------------------------------
+    # MODE A: IDEAL (Zero Latency, Zero Jitter, Zero Clock Bias)
+    # -------------------------------------------------------------------------
+    rng_a = np.random.default_rng(seed)
+    radar_a = RadarSensor(frequency_hz=10.0, sigma_r=6.0, latency_mean=0.0, latency_jitter_std=0.0, clock_bias=0.0, rng=rng_a)
+    camera_a = CameraSensor(frequency_hz=30.0, sigma_psi=0.004, sigma_lambda=0.004, latency_mean=0.0, latency_jitter_std=0.0, clock_bias=0.0, rng=rng_a)
 
-    num_events = simulator.populate_events(
+    sim_a = AsyncSensorEventSimulator(trajectory)
+    sim_a.register_sensor(radar_a, phase_offset=0.0)
+    sim_a.register_sensor(camera_a, phase_offset=0.0125)
+    sim_a.populate_events(t_start=0.0, t_end=sim_duration, uav_position_fn=lambda t: uav_pos)
+
+    ekf_a = ExtendedKalmanFilter(
+        initial_state=x_init_guess.copy(),
+        initial_covariance=P_init.copy(),
+        process_noise_spectral_density=q_continuous,
+        enable_oosm_buffer=False,
+    )
+
+    log_a_time, log_a_err_pos, log_a_err_vel, log_a_state, log_a_gt = [], [], [], [], []
+    for event in sim_a:
+        ekf_a.update(event, uav_pos=uav_pos, is_naive=False)
+        t_now = ekf_a.current_time
+        gt = trajectory.get_state(t_now).to_vector()
+        est = ekf_a.x.flatten().copy()
+        err = est - gt
+        pos_err = float(np.linalg.norm(err[[0, 2, 4]]))
+        vel_err = float(np.linalg.norm(err[[1, 3, 5]]))
+
+        log_a_time.append(t_now)
+        log_a_err_pos.append(pos_err)
+        log_a_err_vel.append(vel_err)
+        log_a_state.append(est)
+        log_a_gt.append(gt)
+
+    print(f"[Mod A - İdeal]           {len(log_a_time)} olay işlendi (Sıfır gecikmeli asenkron füzyon tamamlandı).")
+
+    # -------------------------------------------------------------------------
+    # MODES B & C: SHARED REALISTIC SENSOR STREAM (Latencies, Jitter & Clock Bias)
+    #   - Radar: 8 ms nominal transmission latency + N(0, 2ms) Gaussian jitter
+    #   - Camera: 40 ms nominal image processing latency + N(0, 5ms) Gaussian jitter
+    #   - Camera Clock Bias: +25 ms constant hardware clock offset
+    # -------------------------------------------------------------------------
+    rng_bc = np.random.default_rng(seed)
+    radar_delayed = RadarSensor(
+        frequency_hz=10.0,
+        sigma_r=6.0,
+        latency_mean=0.008,          # 8 ms
+        latency_jitter_std=0.002,    # 2 ms
+        clock_bias=0.0,
+        rng=rng_bc,
+    )
+    camera_delayed = CameraSensor(
+        frequency_hz=30.0,
+        sigma_psi=0.004,
+        sigma_lambda=0.004,
+        latency_mean=0.040,          # 40 ms
+        latency_jitter_std=0.005,    # 5 ms
+        clock_bias=0.025,            # +25 ms hardware clock bias
+        rng=rng_bc,
+    )
+
+    sim_delayed = AsyncSensorEventSimulator(trajectory)
+    sim_delayed.register_sensor(radar_delayed, phase_offset=0.0)
+    sim_delayed.register_sensor(camera_delayed, phase_offset=0.0125)
+    num_events_delayed = sim_delayed.populate_events(
         t_start=0.0,
         t_end=sim_duration,
         uav_position_fn=lambda t: uav_pos,
-        jitter_std=0.0002,  # 0.2 ms clock jitter
     )
-    print(f"[Simulator] Enqueued {num_events} asynchronous sensor events over {sim_duration:.1f}s.")
 
-    # 3. Initialize Extended Kalman Filter
-    # Add initial estimation offset to verify convergence capability
-    initial_offset = np.array([80.0, -15.0, -90.0, 10.0, 40.0, 6.0])
-    x_init_guess = true_initial_state.to_vector() + initial_offset
+    # Clone exact stream so Modes B and C process the identical real-world sequence
+    events_mode_b = sim_delayed.clone_event_stream()
+    events_mode_c = sim_delayed.clone_event_stream()
 
-    # Initial covariance: significant uncertainty in position & velocity
-    P_init = np.diag([
-        150.0**2,   # x pos variance
-        20.0**2,    # vx vel variance
-        150.0**2,   # y pos variance
-        20.0**2,    # vy vel variance
-        100.0**2,   # z pos variance
-        15.0**2,    # vz vel variance
-    ])
-    q_continuous = 0.8  # Continuous process noise acceleration spectral density (m^2/s^3)
+    print(f"[Mod B & C - Gecikmeli]   {num_events_delayed} olay üretildi:")
+    print("                          * Radar: 8ms gecikme ± 2ms jitter")
+    print("                          * Kamera: 40ms gecikme ± 5ms jitter, +25ms saat kayması (clock bias)")
 
-    ekf = ExtendedKalmanFilter(
-        initial_state=x_init_guess,
-        initial_covariance=P_init,
+    # -------------------------------------------------------------------------
+    # MODE B: NAIVE EKF (Assumes processor arrival t_receive is capture epoch)
+    # -------------------------------------------------------------------------
+    ekf_b = ExtendedKalmanFilter(
+        initial_state=x_init_guess.copy(),
+        initial_covariance=P_init.copy(),
         process_noise_spectral_density=q_continuous,
-        initial_timestamp=0.0,
+        enable_oosm_buffer=False,
     )
-    print("[EKF] Filter initialized with intentional state offset and large covariance.")
 
-    # 4. Asynchronous Simulation Loop
-    log_time = []
-    log_true_state = []
-    log_ekf_state = []
-    log_ekf_cov = []
+    log_b_time, log_b_err_pos, log_b_err_vel, log_b_state, log_b_gt = [], [], [], [], []
+    for event in events_mode_b:
+        ekf_b.update(event, uav_pos=uav_pos, is_naive=True)
+        t_eval = event.t_receive  # In naive mode, filter moves along arrival timeline
+        gt = trajectory.get_state(t_eval).to_vector()
+        est = ekf_b.x.flatten().copy()
+        err = est - gt
+        pos_err = float(np.linalg.norm(err[[0, 2, 4]]))
+        vel_err = float(np.linalg.norm(err[[1, 3, 5]]))
 
-    # Raw Cartesian pseudo-measurements
-    log_raw_time = []
-    log_raw_pos = []
+        log_b_time.append(t_eval)
+        log_b_err_pos.append(pos_err)
+        log_b_err_vel.append(vel_err)
+        log_b_state.append(est)
+        log_b_gt.append(gt)
 
-    latest_radar_range: float | None = None
-    latest_cam_angles: tuple[float, float] | None = None
+    print(f"[Mod B - Naive EKF]       {len(log_b_time)} olay işlendi (Gecikmeler ihmal edildi / varış anı capture sanıldı).")
 
-    for event in simulator:
-        # Update raw measurements tracking
-        if event.sensor_type == "RADAR":
-            latest_radar_range = float(event.z[0])
-        elif event.sensor_type == "CAMERA":
-            latest_cam_angles = (float(event.z[0]), float(event.z[1]))
+    # -------------------------------------------------------------------------
+    # MODE C: DELAY-COMPENSATED EKF (Rollback / Buffer-Replay Active)
+    # -------------------------------------------------------------------------
+    ekf_c = ExtendedKalmanFilter(
+        initial_state=x_init_guess.copy(),
+        initial_covariance=P_init.copy(),
+        process_noise_spectral_density=q_continuous,
+        enable_oosm_buffer=True,
+        max_buffer_size=150,
+        max_buffer_dt=1.0,
+    )
 
-        # Reconstruct pseudo-Cartesian if both sensor readings are available
-        if latest_radar_range is not None and latest_cam_angles is not None:
-            raw_pos = reconstruct_pseudo_cartesian(
-                range_val=latest_radar_range,
-                azimuth_val=latest_cam_angles[0],
-                elevation_val=latest_cam_angles[1],
-                uav_pos=uav_pos,
-            )
-            log_raw_time.append(event.timestamp)
-            log_raw_pos.append(raw_pos)
+    log_c_time, log_c_err_pos, log_c_err_vel, log_c_state, log_c_gt = [], [], [], [], []
+    log_delays = []
+    log_oosm_events = []
 
-        # Execute EKF predict and update steps
-        ekf.update(event, uav_pos=uav_pos)
+    for event in events_mode_c:
+        is_oosm = event.t_capture < ekf_c.current_time - 1e-9
+        if is_oosm:
+            log_oosm_events.append((event.t_receive, event.t_capture, event.sensor_type))
 
-        # Log filter estimates and ground truth
-        t_now = event.timestamp
-        gt_state = trajectory.get_state(t_now).to_vector()
-        est_state = ekf.x.flatten().copy()
-        est_cov = np.diag(ekf.P).copy()
+        log_delays.append((event.t_receive, event.t_receive - event.t_capture, event.sensor_type))
 
-        log_time.append(t_now)
-        log_true_state.append(gt_state)
-        log_ekf_state.append(est_state)
-        log_ekf_cov.append(est_cov)
+        ekf_c.update(event, uav_pos=uav_pos, is_naive=False)
 
-    # Convert logs to NumPy arrays
-    t_arr = np.array(log_time)
-    gt_arr = np.array(log_true_state)    # (N, 6)
-    ekf_arr = np.array(log_ekf_state)    # (N, 6)
-    cov_arr = np.array(log_ekf_cov)      # (N, 6) - diagonal elements
+        # Evaluate filter state against ground truth at current filter epoch
+        t_eval = ekf_c.current_time
+        gt = trajectory.get_state(t_eval).to_vector()
+        est = ekf_c.x.flatten().copy()
+        err = est - gt
+        pos_err = float(np.linalg.norm(err[[0, 2, 4]]))
+        vel_err = float(np.linalg.norm(err[[1, 3, 5]]))
 
-    t_raw = np.array(log_raw_time)
-    raw_pos_arr = np.array(log_raw_pos)  # (M, 3)
+        log_c_time.append(t_eval)
+        log_c_err_pos.append(pos_err)
+        log_c_err_vel.append(vel_err)
+        log_c_state.append(est)
+        log_c_gt.append(gt)
 
-    # 5. Performance Metrics (Errors & RMSE)
-    error_state = ekf_arr - gt_arr  # [ex, evx, ey, evy, ez, evz]
-    pos_err_3d = np.linalg.norm(error_state[:, [0, 2, 4]], axis=1)
-    vel_err_3d = np.linalg.norm(error_state[:, [1, 3, 5]], axis=1)
+    print(f"[Mod C - Telafili EKF]    {len(log_c_time)} olay işlendi:")
+    print(f"                          * Başarıyla yönetilen OOSM sayısı : {ekf_c.oosm_count}")
+    print(f"                          * Tampon dışı atılan (dropped)    : {ekf_c.dropped_oosm_count}")
 
-    # Calculate overall RMSE
-    rmse_x = float(np.sqrt(np.mean(error_state[:, 0] ** 2)))
-    rmse_y = float(np.sqrt(np.mean(error_state[:, 2] ** 2)))
-    rmse_z = float(np.sqrt(np.mean(error_state[:, 4] ** 2)))
-    rmse_pos_total = float(np.sqrt(np.mean(pos_err_3d**2)))
+    # -------------------------------------------------------------------------
+    # METRICS EVALUATION & STATISTICAL SUMMARY
+    # -------------------------------------------------------------------------
+    def calc_metrics(times, err_pos_list, err_vel_list, states, gts):
+        t_arr = np.array(times)
+        p_err = np.array(err_pos_list)
+        v_err = np.array(err_vel_list)
+        st_arr = np.array(states)
+        gt_arr = np.array(gts)
+        diff = st_arr - gt_arr
 
-    rmse_vx = float(np.sqrt(np.mean(error_state[:, 1] ** 2)))
-    rmse_vy = float(np.sqrt(np.mean(error_state[:, 3] ** 2)))
-    rmse_vz = float(np.sqrt(np.mean(error_state[:, 5] ** 2)))
-    rmse_vel_total = float(np.sqrt(np.mean(vel_err_3d**2)))
+        # Steady-state window (t >= 3.0s)
+        ss_mask = t_arr >= 3.0
+        ss_p_err = p_err[ss_mask] if np.any(ss_mask) else p_err
+        ss_v_err = v_err[ss_mask] if np.any(ss_mask) else v_err
+        ss_diff = diff[ss_mask] if np.any(ss_mask) else diff
 
-    # Steady-state metrics (after t >= 3.0s convergence period)
-    ss_mask = t_arr >= 3.0
-    ss_rmse_pos = float(np.sqrt(np.mean(pos_err_3d[ss_mask] ** 2)))
-    ss_rmse_vel = float(np.sqrt(np.mean(vel_err_3d[ss_mask] ** 2)))
+        return {
+            "total_pos_rmse": float(np.sqrt(np.mean(p_err**2))),
+            "ss_pos_rmse": float(np.sqrt(np.mean(ss_p_err**2))),
+            "ss_rmse_x": float(np.sqrt(np.mean(ss_diff[:, 0] ** 2))),
+            "ss_rmse_y": float(np.sqrt(np.mean(ss_diff[:, 2] ** 2))),
+            "ss_rmse_z": float(np.sqrt(np.mean(ss_diff[:, 4] ** 2))),
+            "total_vel_rmse": float(np.sqrt(np.mean(v_err**2))),
+            "ss_vel_rmse": float(np.sqrt(np.mean(ss_v_err**2))),
+            "diff": diff,
+            "t_arr": t_arr,
+        }
 
-    # Raw measurement RMSE for comparison
-    gt_interp_x = np.interp(t_raw, t_arr, gt_arr[:, 0])
-    gt_interp_y = np.interp(t_raw, t_arr, gt_arr[:, 2])
-    gt_interp_z = np.interp(t_raw, t_arr, gt_arr[:, 4])
-    raw_err_x = raw_pos_arr[:, 0] - gt_interp_x
-    raw_err_y = raw_pos_arr[:, 1] - gt_interp_y
-    raw_err_z = raw_pos_arr[:, 2] - gt_interp_z
-    raw_pos_err_3d = np.sqrt(raw_err_x**2 + raw_err_y**2 + raw_err_z**2)
-    raw_rmse_total = float(np.sqrt(np.mean(raw_pos_err_3d**2)))
+    met_a = calc_metrics(log_a_time, log_a_err_pos, log_a_err_vel, log_a_state, log_a_gt)
+    met_b = calc_metrics(log_b_time, log_b_err_pos, log_b_err_vel, log_b_state, log_b_gt)
+    met_c = calc_metrics(log_c_time, log_c_err_pos, log_c_err_vel, log_c_state, log_c_gt)
 
-    print("\n" + "=" * 78)
-    print("                         FUSION PERFORMANCE BENCHMARK")
-    print("=" * 78)
-    print(f" Total Simulation Duration : {sim_duration:.2f} s")
-    print(f" Total Fused Events        : {len(t_arr)} (Radar: 10 Hz, Camera: 30 Hz)")
-    print("-" * 78)
-    print(" POSITIONAL RMSE (m):")
-    print(f"   Axis X (North)          : {rmse_x:8.3f} m  (Steady-State: {np.sqrt(np.mean(error_state[ss_mask, 0]**2)):.3f} m)")
-    print(f"   Axis Y (East)           : {rmse_y:8.3f} m  (Steady-State: {np.sqrt(np.mean(error_state[ss_mask, 2]**2)):.3f} m)")
-    print(f"   Axis Z (Down)           : {rmse_z:8.3f} m  (Steady-State: {np.sqrt(np.mean(error_state[ss_mask, 4]**2)):.3f} m)")
-    print(f"   Total 3D Position RMSE  : {rmse_pos_total:8.3f} m  (Steady-State: {ss_rmse_pos:.3f} m)")
-    print(f"   Raw Sensor Unfused RMSE : {raw_rmse_total:8.3f} m  (EKF Improvement: {(1.0 - ss_rmse_pos / raw_rmse_total) * 100:.1f}%)")
-    print("-" * 78)
-    print(" VELOCITY RMSE (m/s):")
-    print(f"   Axis Vx (North)         : {rmse_vx:8.3f} m/s")
-    print(f"   Axis Vy (East)          : {rmse_vy:8.3f} m/s")
-    print(f"   Axis Vz (Down)          : {rmse_vz:8.3f} m/s")
-    print(f"   Total 3D Velocity RMSE  : {rmse_vel_total:8.3f} m/s (Steady-State: {ss_rmse_vel:.3f} m/s)")
-    print("=" * 78)
+    pos_improvement_vs_naive = (1.0 - met_c["ss_pos_rmse"] / met_b["ss_pos_rmse"]) * 100.0
+    vel_improvement_vs_naive = (1.0 - met_c["ss_vel_rmse"] / met_b["ss_vel_rmse"]) * 100.0
 
-    # 6. Visualization (3 Subplots: Positions, Velocities, Errors & 3-Sigma)
-    fig, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
-    fig.patch.set_facecolor("#FAFAFA")
+    print("\n" + "=" * 84)
+    print("            PROJE 2. AŞAMA: PERFORMANS VE KIYASLAMA TABLOSU")
+    print("=" * 84)
+    col_w = [34, 15, 15, 16]
+    print(f"{'Metrik / Parametre':<{col_w[0]}} | {'Mod A (İdeal)':<{col_w[1]}} | {'Mod B (Naive)':<{col_w[2]}} | {'Mod C (Rollback)':<{col_w[3]}}")
+    print("-" * 84)
+    print(f"{'Kalıcı Durum 3B Konum RMSE (m)':<{col_w[0]}} | {met_a['ss_pos_rmse']:<{col_w[1]}.3f} | {met_b['ss_pos_rmse']:<{col_w[2]}.3f} | {met_c['ss_pos_rmse']:<{col_w[3]}.3f}")
+    print(f"{'  - Eksen X (Kuzey) RMSE (m)':<{col_w[0]}} | {met_a['ss_rmse_x']:<{col_w[1]}.3f} | {met_b['ss_rmse_x']:<{col_w[2]}.3f} | {met_c['ss_rmse_x']:<{col_w[3]}.3f}")
+    print(f"{'  - Eksen Y (Doğu) RMSE (m)':<{col_w[0]}} | {met_a['ss_rmse_y']:<{col_w[1]}.3f} | {met_b['ss_rmse_y']:<{col_w[2]}.3f} | {met_c['ss_rmse_y']:<{col_w[3]}.3f}")
+    print(f"{'  - Eksen Z (İrtifa) RMSE (m)':<{col_w[0]}} | {met_a['ss_rmse_z']:<{col_w[1]}.3f} | {met_b['ss_rmse_z']:<{col_w[2]}.3f} | {met_c['ss_rmse_z']:<{col_w[3]}.3f}")
+    print(f"{'Toplam 3B Konum RMSE (m)':<{col_w[0]}} | {met_a['total_pos_rmse']:<{col_w[1]}.3f} | {met_b['total_pos_rmse']:<{col_w[2]}.3f} | {met_c['total_pos_rmse']:<{col_w[3]}.3f}")
+    print("-" * 84)
+    print(f"{'Kalıcı Durum 3B Hız RMSE (m/s)':<{col_w[0]}} | {met_a['ss_vel_rmse']:<{col_w[1]}.3f} | {met_b['ss_vel_rmse']:<{col_w[2]}.3f} | {met_c['ss_vel_rmse']:<{col_w[3]}.3f}")
+    print(f"{'Toplam 3B Hız RMSE (m/s)':<{col_w[0]}} | {met_a['total_vel_rmse']:<{col_w[1]}.3f} | {met_b['total_vel_rmse']:<{col_w[2]}.3f} | {met_c['total_vel_rmse']:<{col_w[3]}.3f}")
+    print("-" * 84)
+    print(f"{'İşlenen OOSM Olay Sayısı':<{col_w[0]}} | {'0 (Gecikmesiz)':<{col_w[1]}} | {'0 (Yönetilemez)':<{col_w[2]}} | {ekf_c.oosm_count:<{col_w[3]}}")
+    print(f"{'Atılan (Dropped) OOSM Sayısı':<{col_w[0]}} | {'0':<{col_w[1]}} | {'0':<{col_w[2]}} | {ekf_c.dropped_oosm_count:<{col_w[3]}}")
+    lbl_imp = "Mod B (Naive) Moduna Göre İyileşme"
+    print(f"{lbl_imp:<{col_w[0]}} | {'-':<{col_w[1]}} | {'Referans':<{col_w[2]}} | %{pos_improvement_vs_naive:<{col_w[3]-1}.1f}")
+    print("=" * 84)
 
-    # ---------------- Subplot 1: 3D Positions (x, y, z) ----------------
+    # -------------------------------------------------------------------------
+    # MULTI-PANEL VISUALIZATION (4 SUBPLOTS)
+    # -------------------------------------------------------------------------
+    fig, axes = plt.subplots(4, 1, figsize=(15, 14), sharex=True)
+    fig.patch.set_facecolor("#F8F9FA")
+
+    c_ideal = "#1F77B4"       # Deep Blue
+    c_naive = "#D62728"       # Crimson Red
+    c_replay = "#2CA02C"      # Forest Green
+    c_radar = "#FF7F0E"       # Amber
+    c_cam = "#9467BD"         # Purple
+
+    # Subplot 1: 3D Position Tracking Error
     ax1 = axes[0]
     ax1.set_facecolor("#FFFFFF")
-    # Ground Truth
-    ax1.plot(t_arr, gt_arr[:, 0], "k-", linewidth=2.2, label=r"Ground Truth $X$ (North)", alpha=0.9)
-    ax1.plot(t_arr, gt_arr[:, 2], "k--", linewidth=2.0, label=r"Ground Truth $Y$ (East)", alpha=0.9)
-    ax1.plot(t_arr, gt_arr[:, 4], "k:", linewidth=2.0, label=r"Ground Truth $Z$ (Down)", alpha=0.9)
+    ax1.plot(log_b_time, log_b_err_pos, color=c_naive, linewidth=1.8, alpha=0.85,
+             label=f"Mod B (Naive EKF) - Kalıcı RMSE: {met_b['ss_pos_rmse']:.2f} m")
+    ax1.plot(log_c_time, log_c_err_pos, color=c_replay, linewidth=2.0, alpha=0.9,
+             label=f"Mod C (Rollback/Replay EKF) - Kalıcı RMSE: {met_c['ss_pos_rmse']:.2f} m")
+    ax1.plot(log_a_time, log_a_err_pos, color=c_ideal, linewidth=1.5, linestyle="--", alpha=0.8,
+             label=f"Mod A (İdeal Sıfır Gecikme) - Kalıcı RMSE: {met_a['ss_pos_rmse']:.2f} m")
 
-    # Raw Measurements (subsampled for clarity)
-    step = 4
-    ax1.scatter(t_raw[::step], raw_pos_arr[::step, 0], s=8, color="#E74C3C", alpha=0.35, label="Raw $X$")
-    ax1.scatter(t_raw[::step], raw_pos_arr[::step, 1], s=8, color="#2ECC71", alpha=0.35, label="Raw $Y$")
-    ax1.scatter(t_raw[::step], raw_pos_arr[::step, 2], s=8, color="#3498DB", alpha=0.35, label="Raw $Z$")
-
-    # EKF Estimates
-    ax1.plot(t_arr, ekf_arr[:, 0], color="#C0392B", linewidth=1.8, label=r"EKF $\hat{X}$")
-    ax1.plot(t_arr, ekf_arr[:, 2], color="#27AE60", linewidth=1.8, label=r"EKF $\hat{Y}$")
-    ax1.plot(t_arr, ekf_arr[:, 4], color="#2980B9", linewidth=1.8, label=r"EKF $\hat{Z}$")
-
-    ax1.set_title("1. Hedef Konum Takibi: Yer Gerçeği, Ham Ölçüm ve Asenkron EKF Kestirimi (NED)", fontsize=12, fontweight="bold")
-    ax1.set_ylabel("Konum (m)", fontsize=11)
+    ax1.set_title("1. 3B Konum Kestirim Hatası: İdeal vs. Naive vs. Rollback/Replay Karşılaştırması",
+                  fontsize=12, fontweight="bold")
+    ax1.set_ylabel("3B Hata (m)", fontsize=11)
     ax1.grid(True, linestyle=":", alpha=0.6)
-    ax1.legend(loc="upper right", ncol=3, fontsize=9, framealpha=0.9)
+    ax1.legend(loc="upper right", fontsize=10, framealpha=0.95)
+    ax1.set_ylim(0, max(20.0, min(60.0, float(np.percentile(log_b_err_pos, 98)))))
 
-    # ---------------- Subplot 2: 3D Velocities (vx, vy, vz) ----------------
+    # Subplot 2: Axial Position Errors (X, Y, Z for Mode B vs Mode C)
     ax2 = axes[1]
     ax2.set_facecolor("#FFFFFF")
-    # True Velocities
-    ax2.plot(t_arr, gt_arr[:, 1], "r--", linewidth=2.0, label=r"True $V_x$ (North)", alpha=0.8)
-    ax2.plot(t_arr, gt_arr[:, 3], "g--", linewidth=2.0, label=r"True $V_y$ (East)", alpha=0.8)
-    ax2.plot(t_arr, gt_arr[:, 5], "b--", linewidth=2.0, label=r"True $V_z$ (Down)", alpha=0.8)
+    diff_b = met_b["diff"]
+    diff_c = met_c["diff"]
+    ax2.plot(met_b["t_arr"], diff_b[:, 0], color="#E74C3C", linestyle=":", linewidth=1.4, label=r"Naive $e_x$ (Kuzey)")
+    ax2.plot(met_b["t_arr"], diff_b[:, 2], color="#E67E22", linestyle=":", linewidth=1.4, label=r"Naive $e_y$ (Doğu)")
+    ax2.plot(met_c["t_arr"], diff_c[:, 0], color="#27AE60", linestyle="-", linewidth=1.6, label=r"Rollback $e_x$ (Kuzey)")
+    ax2.plot(met_c["t_arr"], diff_c[:, 2], color="#2980B9", linestyle="-", linewidth=1.6, label=r"Rollback $e_y$ (Doğu)")
+    ax2.axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.7)
 
-    # EKF Velocity Estimates
-    ax2.plot(t_arr, ekf_arr[:, 1], color="#922B21", linewidth=1.8, label=r"EKF $\hat{V}_x$")
-    ax2.plot(t_arr, ekf_arr[:, 3], color="#1E8449", linewidth=1.8, label=r"EKF $\hat{V}_y$")
-    ax2.plot(t_arr, ekf_arr[:, 5], color="#1F618D", linewidth=1.8, label=r"EKF $\hat{V}_z$")
-
-    ax2.set_title("2. Hız Vektörü Yakınsaması (Doppler Olmayan Ölçümlerden Türetilen Hız)", fontsize=12, fontweight="bold")
-    ax2.set_ylabel("Hız (m/s)", fontsize=11)
+    ax2.set_title("2. Eksenel Konum Hataları (X ve Y Eksenlerinde Gecikme Kaynaklı Kaymanın Telafisi)",
+                  fontsize=12, fontweight="bold")
+    ax2.set_ylabel("Eksenel Hata (m)", fontsize=11)
     ax2.grid(True, linestyle=":", alpha=0.6)
-    ax2.legend(loc="upper right", ncol=2, fontsize=9, framealpha=0.9)
+    ax2.legend(loc="upper right", ncol=4, fontsize=9, framealpha=0.95)
 
-    # ---------------- Subplot 3: Position Errors & 3-Sigma Bounds ----------------
+    # Subplot 3: 3D Velocity Error
     ax3 = axes[2]
     ax3.set_facecolor("#FFFFFF")
-    sigma_x = np.sqrt(np.maximum(cov_arr[:, 0], 0.0))
-    sigma_y = np.sqrt(np.maximum(cov_arr[:, 2], 0.0))
-    sigma_z = np.sqrt(np.maximum(cov_arr[:, 4], 0.0))
+    ax3.plot(log_b_time, log_b_err_vel, color=c_naive, linewidth=1.8, alpha=0.85,
+             label=f"Mod B (Naive EKF) - Kalıcı RMSE: {met_b['ss_vel_rmse']:.2f} m/s")
+    ax3.plot(log_c_time, log_c_err_vel, color=c_replay, linewidth=2.0, alpha=0.9,
+             label=f"Mod C (Rollback/Replay EKF) - Kalıcı RMSE: {met_c['ss_vel_rmse']:.2f} m/s")
+    ax3.plot(log_a_time, log_a_err_vel, color=c_ideal, linewidth=1.5, linestyle="--", alpha=0.8,
+             label=f"Mod A (İdeal Sıfır Gecikme) - Kalıcı RMSE: {met_a['ss_vel_rmse']:.2f} m/s")
 
-    # Plot errors
-    ax3.plot(t_arr, error_state[:, 0], color="#C0392B", label=r"Hata $e_x$ ($X - \hat{X}$)")
-    ax3.plot(t_arr, error_state[:, 2], color="#27AE60", label=r"Hata $e_y$ ($Y - \hat{Y}$)")
-    ax3.plot(t_arr, error_state[:, 4], color="#2980B9", label=r"Hata $e_z$ ($Z - \hat{Z}$)")
-
-    # 3-sigma bounds for X (representative)
-    ax3.fill_between(t_arr, -3 * sigma_x, 3 * sigma_x, color="#C0392B", alpha=0.12, label=r"$\pm 3\sigma_x$ Kovaryans Zarfı")
-    ax3.fill_between(t_arr, -3 * sigma_y, 3 * sigma_y, color="#27AE60", alpha=0.10, label=r"$\pm 3\sigma_y$ Kovaryans Zarfı")
-
-    ax3.axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.7)
-    ax3.set_title(f"3. Konum Hataları ve $3\\sigma$ Filtre Tutarlılık Sınırları (Kalıcı Durum RMSE: {ss_rmse_pos:.2f} m)", fontsize=12, fontweight="bold")
-    ax3.set_xlabel("Zaman (s)", fontsize=11)
-    ax3.set_ylabel("Hata (m)", fontsize=11)
+    ax3.set_title("3. 3B Hız Kestirim Hatası ve Yakınsama Performansı", fontsize=12, fontweight="bold")
+    ax3.set_ylabel("Hız Hatası (m/s)", fontsize=11)
     ax3.grid(True, linestyle=":", alpha=0.6)
-    ax3.legend(loc="upper right", ncol=3, fontsize=9, framealpha=0.9)
+    ax3.legend(loc="upper right", fontsize=10, framealpha=0.95)
+    ax3.set_ylim(0, max(8.0, min(20.0, float(np.percentile(log_b_err_vel, 98)))))
+
+    # Subplot 4: Latency Distribution and OOSM Arrival Events
+    ax4 = axes[3]
+    ax4.set_facecolor("#FFFFFF")
+    radar_delays = [(t, d * 1000.0) for t, d, s in log_delays if s == "RADAR"]
+    camera_delays = [(t, d * 1000.0) for t, d, s in log_delays if s == "CAMERA"]
+
+    if radar_delays:
+        rt, rd = zip(*radar_delays)
+        ax4.scatter(rt, rd, color=c_radar, s=16, alpha=0.65, label="Radar İletim Gecikmesi (~8 ms + 2ms Jitter)", marker="o")
+    if camera_delays:
+        ct, cd = zip(*camera_delays)
+        ax4.scatter(ct, cd, color=c_cam, s=14, alpha=0.65, label="Kamera İşleme Gecikmesi (~40 ms + 5ms Jitter)", marker="^")
+
+    if log_oosm_events:
+        oosm_t, oosm_c, _ = zip(*log_oosm_events)
+        ax4.scatter(oosm_t, [(ot - oc) * 1000.0 for ot, oc in zip(oosm_t, oosm_c)],
+                    color="#D62728", s=35, marker="x", linewidth=1.5,
+                    label=f"Algılanan OOSM Olayları (Toplam: {len(log_oosm_events)} adet)")
+
+    ax4.set_title("4. Sensör İletim/İşleme Gecikmeleri ve Algılanan Sıra Dışı Ölçüm (OOSM) Dağılımı",
+                  fontsize=12, fontweight="bold")
+    ax4.set_xlabel("Simülasyon Zamanı (s)", fontsize=11)
+    ax4.set_ylabel("Gecikme (ms)", fontsize=11)
+    ax4.grid(True, linestyle=":", alpha=0.6)
+    ax4.legend(loc="upper right", fontsize=10, framealpha=0.95)
 
     plt.tight_layout()
 
     os.makedirs(os.path.dirname(save_fig_path), exist_ok=True)
     plt.savefig(save_fig_path, dpi=300, bbox_inches="tight")
-    print(f"\n[Visualization] Yüksek çözünürlüklü grafik kaydedildi -> '{save_fig_path}'")
+    print(f"\n[Görselleştirme] Kıyaslama grafiği kaydedildi -> '{save_fig_path}'")
+
+    alt_save_path = "results/ekf_fusion_results.png"
+    plt.savefig(alt_save_path, dpi=300, bbox_inches="tight")
+    print(f"[Görselleştirme] Ana sonuç grafiği güncellendi -> '{alt_save_path}'")
 
     if show_plot:
         plt.show()
 
     return {
-        "rmse_pos_total": rmse_pos_total,
-        "ss_rmse_pos": ss_rmse_pos,
-        "rmse_vel_total": rmse_vel_total,
-        "ss_rmse_vel": ss_rmse_vel,
-        "raw_rmse_total": raw_rmse_total,
+        "mode_a": met_a,
+        "mode_b": met_b,
+        "mode_c": met_c,
+        "pos_improvement_vs_naive": pos_improvement_vs_naive,
+        "vel_improvement_vs_naive": vel_improvement_vs_naive,
+        "oosm_count": ekf_c.oosm_count,
+        "dropped_oosm_count": ekf_c.dropped_oosm_count,
     }
 
 
 if __name__ == "__main__":
-    run_simulation(sim_duration=20.0, show_plot=False)
+    run_benchmark(sim_duration=20.0, show_plot=False)

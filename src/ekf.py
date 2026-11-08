@@ -1,20 +1,42 @@
 """
 Asynchronous Extended Kalman Filter (EKF) Engine for 3D Target Tracking.
-Implements Continuous White Noise Acceleration (CWNA) dynamics and nonlinear Radar/Camera updates
-with analytic Jacobians and Joseph-form covariance stabilization.
+Implements Continuous White Noise Acceleration (CWNA) dynamics, nonlinear Radar/Camera updates
+with analytic Jacobians, Joseph-form covariance stabilization, and Out-Of-Sequence Measurement (OOSM)
+Rollback / Buffer-Replay latency compensation.
 """
 
 from __future__ import annotations
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import Optional, Tuple, List
 import numpy as np
 
 from .sensors import SensorMeasurement
 from .dynamics import TargetState
 
 
+@dataclass
+class FilterSnapshot:
+    """
+    State and covariance snapshot recorded after filter propagation / update.
+    Used by the circular buffer to rewind and replay out-of-sequence events.
+
+    Attributes:
+        t (float): Epoch in seconds.
+        x (np.ndarray): 6x1 state vector [x, vx, y, vy, z, vz]^T.
+        P (np.ndarray): 6x6 covariance matrix.
+        measurement (Optional[SensorMeasurement]): Measurement applied at this snapshot.
+        uav_pos (Optional[np.ndarray]): 3D position of UAV at this epoch.
+    """
+    t: float
+    x: np.ndarray
+    P: np.ndarray
+    measurement: Optional[SensorMeasurement] = None
+    uav_pos: Optional[np.ndarray] = None
+
+
 class ExtendedKalmanFilter:
     """
-    6-DOF Asynchronous Extended Kalman Filter in 3D NED frame.
+    6-DOF Asynchronous Extended Kalman Filter in 3D NED frame with OOSM Rollback/Replay capability.
 
     State vector:
         x = [x, vx, y, vy, z, vz]^T
@@ -31,6 +53,9 @@ class ExtendedKalmanFilter:
         initial_covariance: np.ndarray,
         process_noise_spectral_density: float = 1.0,
         initial_timestamp: float = 0.0,
+        enable_oosm_buffer: bool = True,
+        max_buffer_size: int = 150,
+        max_buffer_dt: float = 1.0,
     ) -> None:
         """
         Args:
@@ -38,6 +63,9 @@ class ExtendedKalmanFilter:
             initial_covariance: 6x6 initial error covariance matrix P_0.
             process_noise_spectral_density: Power spectral density (q_c) of continuous-time acceleration noise (m^2/s^3).
             initial_timestamp: Initial filter epoch in seconds.
+            enable_oosm_buffer: Whether to enable Rollback/Replay buffer for out-of-sequence measurements.
+            max_buffer_size: Maximum number of historical snapshots preserved in memory.
+            max_buffer_dt: Maximum age in seconds before an OOSM is dropped as stale.
         """
         self.x = np.asarray(initial_state, dtype=np.float64).reshape((6, 1))
         self.P = np.asarray(initial_covariance, dtype=np.float64)
@@ -48,6 +76,21 @@ class ExtendedKalmanFilter:
         self.q_c = float(process_noise_spectral_density)
         self.current_time = float(initial_timestamp)
         self.I6 = np.eye(6, dtype=np.float64)
+
+        # OOSM Buffer configuration
+        self.enable_oosm_buffer = bool(enable_oosm_buffer)
+        self.max_buffer_size = int(max_buffer_size)
+        self.max_buffer_dt = float(max_buffer_dt)
+
+        # Diagnostics & counters
+        self.oosm_count: int = 0
+        self.dropped_oosm_count: int = 0
+        self.in_order_count: int = 0
+
+        # Circular buffer initialized with initial state
+        self.history: List[FilterSnapshot] = []
+        if self.enable_oosm_buffer:
+            self._record_snapshot(self.current_time, None, None)
 
     # -------------------------------------------------------------------------
     # System Transition and Process Noise Matrices
@@ -104,11 +147,11 @@ class ExtendedKalmanFilter:
 
         if dt < -1e-9:
             raise ValueError(
-                f"Out-of-order event received: filter time {self.current_time:.6f}s, event time {timestamp:.6f}s"
+                f"Out-of-order event received in predict(): filter time {self.current_time:.6f}s, target time {timestamp:.6f}s"
             )
 
         if dt <= 1e-9:
-            # Zero or near-zero time step (simultaneous arrival), state and covariance do not propagate
+            # Near-zero time step (simultaneous arrival), state and covariance do not propagate
             self.current_time = timestamp
             return
 
@@ -205,36 +248,27 @@ class ExtendedKalmanFilter:
         return H
 
     # -------------------------------------------------------------------------
-    # Update Step
+    # Measurement Correction (Innovation, Kalman Gain, Joseph Form)
     # -------------------------------------------------------------------------
 
-    def update(
+    def _apply_correction(
         self, measurement: SensorMeasurement, uav_pos: Optional[np.ndarray] = None
     ) -> None:
-        """
-        Performs EKF measurement correction with Joseph-form covariance stabilization.
-
-        Args:
-            measurement: SensorMeasurement instance containing timestamp, type, z, R_cov.
-            uav_pos: 3D coordinates [x, y, z] of UAV at measurement epoch.
-        """
-        # Ensure state is predicted up to measurement epoch
-        self.predict(measurement.timestamp)
-
+        """Applies nonlinear correction equation with Joseph-form covariance stabilization."""
+        effective_uav_pos = uav_pos if uav_pos is not None else measurement.uav_pos
         z = np.asarray(measurement.z, dtype=np.float64).reshape((-1, 1))
         R_cov = np.asarray(measurement.R_cov, dtype=np.float64)
 
         if measurement.sensor_type.upper() == "RADAR":
-            z_pred = self.h_radar(self.x, uav_pos)
-            H = self.jacobian_radar(self.x, uav_pos)
-            # Innovation
+            z_pred = self.h_radar(self.x, effective_uav_pos)
+            H = self.jacobian_radar(self.x, effective_uav_pos)
             y = z - z_pred
 
         elif measurement.sensor_type.upper() == "CAMERA":
-            z_pred = self.h_camera(self.x, uav_pos)
-            H = self.jacobian_camera(self.x, uav_pos)
-            # Innovation with angular wrapping for azimuth in [-pi, pi]
+            z_pred = self.h_camera(self.x, effective_uav_pos)
+            H = self.jacobian_camera(self.x, effective_uav_pos)
             y = z - z_pred
+            # Angular wrapping for azimuth within [-pi, pi]
             y[0, 0] = (y[0, 0] + np.pi) % (2.0 * np.pi) - np.pi
 
         else:
@@ -243,18 +277,161 @@ class ExtendedKalmanFilter:
         # Innovation covariance: S = H * P * H^T + R
         S = H @ self.P @ H.T + R_cov
 
-        # Kalman Gain: K = P * H^T * S^(-1)
-        # Solve S * K^T = H * P via linear system for numerical stability
+        # Kalman Gain: K = P * H^T * S^(-1) via linear solve for numerical stability
         K = np.linalg.solve(S, H @ self.P).T
 
         # State update
         self.x = self.x + K @ y
 
-        # Joseph form covariance update for positive semi-definiteness & symmetry:
-        # P = (I - K*H) * P * (I - K*H)^T + K * R * K^T
+        # Joseph form covariance update: P = (I - K*H)*P*(I - K*H)^T + K*R*K^T
         I_KH = self.I6 - K @ H
         self.P = I_KH @ self.P @ I_KH.T + K @ R_cov @ K.T
         self.P = 0.5 * (self.P + self.P.T)
+
+    # -------------------------------------------------------------------------
+    # History Buffer Operations (Rollback & Replay)
+    # -------------------------------------------------------------------------
+
+    def _record_snapshot(
+        self,
+        t: float,
+        measurement: Optional[SensorMeasurement],
+        uav_pos: Optional[np.ndarray],
+    ) -> None:
+        """Appends a new state snapshot to the history circular buffer."""
+        snap = FilterSnapshot(
+            t=t,
+            x=self.x.copy(),
+            P=self.P.copy(),
+            measurement=measurement,
+            uav_pos=uav_pos if uav_pos is not None else (measurement.uav_pos if measurement else None),
+        )
+        self.history.append(snap)
+        self._prune_history()
+
+    def _prune_history(self) -> None:
+        """Enforces buffer limits while preserving at least the initial anchor snapshot."""
+        if len(self.history) > self.max_buffer_size:
+            excess = len(self.history) - self.max_buffer_size
+            self.history = self.history[excess:]
+
+    def _rollback_and_replay(
+        self, measurement: SensorMeasurement, uav_pos: Optional[np.ndarray] = None
+    ) -> bool:
+        """
+        Executes Rollback & Replay algorithm for an Out-Of-Sequence Measurement (OOSM):
+            1. Locates historical state bracket preceding measurement.t_capture.
+            2. Rewinds filter state and covariance to that bracket.
+            3. Injects delayed measurement and updates state.
+            4. Replays all subsequent measurements up to current epoch.
+
+        Returns:
+            bool: True if OOSM was successfully integrated, False if dropped due to buffer age.
+        """
+        t_meas = float(measurement.t_capture)
+        effective_uav_pos = uav_pos if uav_pos is not None else measurement.uav_pos
+
+        # Check if measurement is older than oldest available snapshot in buffer
+        if not self.history or t_meas < self.history[0].t - 1e-9:
+            self.dropped_oosm_count += 1
+            return False
+
+        # Find the snapshot immediately preceding or at t_meas
+        idx = 0
+        for i in range(len(self.history)):
+            if self.history[i].t <= t_meas + 1e-9:
+                idx = i
+            else:
+                break
+
+        base_snap = self.history[idx]
+
+        # 1. Rollback to base snapshot
+        self.x = base_snap.x.copy()
+        self.P = base_snap.P.copy()
+        self.current_time = base_snap.t
+
+        # 2. Predict to delayed measurement epoch and apply correction
+        self.predict(t_meas)
+        self._apply_correction(measurement, effective_uav_pos)
+
+        # Create new snapshot for the newly integrated measurement
+        new_snap = FilterSnapshot(
+            t=t_meas,
+            x=self.x.copy(),
+            P=self.P.copy(),
+            measurement=measurement,
+            uav_pos=effective_uav_pos,
+        )
+
+        # 3. Replay subsequent historical measurements in strict chronological order
+        subsequent = self.history[idx + 1 :]
+        self.history = self.history[: idx + 1] + [new_snap]
+
+        for snap in subsequent:
+            self.predict(snap.t)
+            if snap.measurement is not None:
+                self._apply_correction(snap.measurement, snap.uav_pos)
+
+            self.history.append(
+                FilterSnapshot(
+                    t=snap.t,
+                    x=self.x.copy(),
+                    P=self.P.copy(),
+                    measurement=snap.measurement,
+                    uav_pos=snap.uav_pos,
+                )
+            )
+
+        self.oosm_count += 1
+        self._prune_history()
+        return True
+
+    # -------------------------------------------------------------------------
+    # Main Filter Update Step
+    # -------------------------------------------------------------------------
+
+    def update(
+        self,
+        measurement: SensorMeasurement,
+        uav_pos: Optional[np.ndarray] = None,
+        is_naive: bool = False,
+    ) -> None:
+        """
+        Performs EKF prediction and measurement correction.
+
+        Args:
+            measurement: SensorMeasurement instance containing readings and timestamps.
+            uav_pos: 3D coordinates [x, y, z] of UAV at measurement epoch.
+            is_naive: If True, operates in Naive mode (assumes arrival epoch t_receive is capture time).
+                      If False, operates in Delay-Compensated mode using t_capture with OOSM buffer.
+        """
+        effective_uav_pos = uav_pos if uav_pos is not None else measurement.uav_pos
+
+        # Mode B: Naive filter - ignores latency and assumes arrival epoch is capture epoch
+        if is_naive:
+            t_target = measurement.t_receive
+            self.predict(t_target)
+            self._apply_correction(measurement, effective_uav_pos)
+            self.in_order_count += 1
+            return
+
+        # Delay-Compensated mode: Use actual capture timestamp
+        t_meas = measurement.t_capture
+
+        if t_meas >= self.current_time - 1e-9:
+            # Chronologically in-order measurement
+            self.predict(t_meas)
+            self._apply_correction(measurement, effective_uav_pos)
+            if self.enable_oosm_buffer:
+                self._record_snapshot(t_meas, measurement, effective_uav_pos)
+            self.in_order_count += 1
+        else:
+            # Out-Of-Sequence Measurement (OOSM) detected!
+            if not self.enable_oosm_buffer:
+                self.dropped_oosm_count += 1
+                return
+            self._rollback_and_replay(measurement, effective_uav_pos)
 
     def get_state(self) -> TargetState:
         """Returns the current estimated target state."""

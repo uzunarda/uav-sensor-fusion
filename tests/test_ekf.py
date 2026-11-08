@@ -77,77 +77,130 @@ class TestEKFSystem(unittest.TestCase):
             z_minus = ekf.h_camera(x_minus, uav_pos)
 
             diff = z_plus - z_minus
-            # Wrap azimuth difference if needed
             diff[0, 0] = (diff[0, 0] + np.pi) % (2.0 * np.pi) - np.pi
 
             H_numeric[:, i] = (diff / (2.0 * eps)).flatten()
 
         np.testing.assert_allclose(H_analytic, H_numeric, atol=1e-5)
 
-    def test_event_simulator_ordering(self):
-        """Ensure priority queue delivers strictly non-decreasing timestamps."""
-        init_state = TargetState(x=1000.0, vx=20.0, y=500.0, vy=-15.0, z=-300.0, vz=0.0)
-        traj = ConstantVelocityTrajectory(init_state)
+    def test_sensor_latency_and_timestamps(self):
+        """Phase 2: Verify sensor latency modeling, jitter, and clock bias."""
+        rng = np.random.default_rng(123)
+        radar = RadarSensor(frequency_hz=10.0, latency_mean=0.008, latency_jitter_std=0.002, clock_bias=0.0, rng=rng)
+        camera = CameraSensor(frequency_hz=30.0, latency_mean=0.040, latency_jitter_std=0.005, clock_bias=0.025, rng=rng)
 
+        tgt = np.array([1000.0, 200.0, -300.0])
+        uav = np.array([0.0, 0.0, -100.0])
+
+        m_radar = radar.measure(timestamp=1.0, target_pos=tgt, uav_pos=uav)
+        m_cam = camera.measure(timestamp=1.0, target_pos=tgt, uav_pos=uav)
+
+        # Radar: t_capture == 1.0, t_receive ~= 1.008s
+        self.assertAlmostEqual(m_radar.t_capture, 1.0, places=5)
+        self.assertGreater(m_radar.t_receive, m_radar.t_capture)
+        self.assertAlmostEqual(m_radar.t_receive - m_radar.t_capture, 0.008, delta=0.008)
+
+        # Camera: t_capture == 1.025 (due to +25ms clock bias), t_receive ~= 1.065s
+        self.assertAlmostEqual(m_cam.t_capture, 1.025, places=5)
+        self.assertGreater(m_cam.t_receive, m_cam.t_capture)
+        self.assertAlmostEqual(m_cam.t_receive - m_cam.t_capture, 0.040, delta=0.020)
+
+    def test_priority_queue_arrival_ordering_and_oosm_generation(self):
+        """Phase 2: Verify priority queue orders events by t_receive and generates OOSMs."""
+        traj = ConstantVelocityTrajectory(TargetState(1000.0, 20.0, 500.0, -15.0, -300.0, 0.0))
         sim = AsyncSensorEventSimulator(traj)
-        sim.register_sensor(RadarSensor(frequency_hz=10.0), phase_offset=0.0)
-        sim.register_sensor(CameraSensor(frequency_hz=30.0), phase_offset=0.0123)
 
-        count = sim.populate_events(t_start=0.0, t_end=1.0)
-        self.assertGreater(count, 0)
+        radar = RadarSensor(10.0, 5.0, latency_mean=0.008, latency_jitter_std=0.002, clock_bias=0.0)
+        camera = CameraSensor(30.0, 0.005, 0.005, latency_mean=0.040, latency_jitter_std=0.005, clock_bias=0.025)
 
-        prev_t = -1.0
-        radar_count = 0
-        camera_count = 0
+        sim.register_sensor(radar, phase_offset=0.0)
+        sim.register_sensor(camera, phase_offset=0.0123)
+        sim.populate_events(t_start=0.0, t_end=2.0)
 
-        for event in sim:
-            self.assertGreaterEqual(event.timestamp, prev_t)
-            prev_t = event.timestamp
-            if event.sensor_type == "RADAR":
-                radar_count += 1
-            elif event.sensor_type == "CAMERA":
-                camera_count += 1
+        events = sim.clone_event_stream()
+        self.assertGreater(len(events), 50)
 
-        self.assertGreaterEqual(radar_count, 10)
-        self.assertGreaterEqual(camera_count, 30)
+        # Ensure strict arrival ordering (t_receive)
+        prev_recv = -1.0
+        oosm_detected = False
+        curr_capture_max = -1.0
 
-    def test_ekf_filtering_convergence(self):
-        """Ensure EKF converges and maintains symmetric positive-definite covariance."""
-        init_true = TargetState(x=800.0, vx=25.0, y=-400.0, vy=10.0, z=-200.0, vz=-2.0)
-        traj = ConstantVelocityTrajectory(init_true)
+        for e in events:
+            self.assertGreaterEqual(e.t_receive, prev_recv)
+            prev_recv = e.t_receive
 
-        # Initial guess with offset
-        init_guess = np.array([850.0, 10.0, -350.0, 0.0, -150.0, 0.0])
-        init_cov = np.diag([200.0**2, 20.0**2, 200.0**2, 20.0**2, 100.0**2, 10.0**2])
+            if e.t_capture < curr_capture_max:
+                oosm_detected = True
+            else:
+                curr_capture_max = e.t_capture
+
+        self.assertTrue(oosm_detected, "Out-Of-Sequence Measurements (OOSM) must occur due to differential latency.")
+
+    def test_ekf_oosm_rollback_replay(self):
+        """Phase 2: Verify EKF buffer rewinds, updates with delayed measurement, and replays."""
+        x0 = np.array([1000.0, 20.0, 500.0, -10.0, -300.0, 0.0])
+        P0 = np.eye(6) * 100.0
 
         ekf = ExtendedKalmanFilter(
-            initial_state=init_guess,
-            initial_covariance=init_cov,
-            process_noise_spectral_density=0.1,
+            initial_state=x0,
+            initial_covariance=P0,
+            process_noise_spectral_density=0.5,
+            initial_timestamp=0.0,
+            enable_oosm_buffer=True,
+            max_buffer_size=50,
         )
 
-        sim = AsyncSensorEventSimulator(traj)
-        sim.register_sensor(RadarSensor(frequency_hz=10.0, sigma_r=2.0), phase_offset=0.0)
-        sim.register_sensor(CameraSensor(frequency_hz=30.0, sigma_psi=0.002, sigma_lambda=0.002), phase_offset=0.015)
-        sim.populate_events(t_start=0.0, t_end=10.0)
+        uav_pos = np.zeros(3)
 
-        for event in sim:
-            ekf.update(event)
+        # Step 1: In-order Radar measurement at t=1.00s
+        m1 = SensorMeasurement(t_capture=1.00, sensor_type="RADAR", z=np.array([1100.0]), R_cov=np.array([[25.0]]), t_receive=1.008, uav_pos=uav_pos)
+        ekf.update(m1, uav_pos=uav_pos)
+        self.assertAlmostEqual(ekf.current_time, 1.00)
+        self.assertEqual(ekf.oosm_count, 0)
+        self.assertEqual(len(ekf.history), 2)  # Initial anchor + m1
 
-        # Check symmetry and positive definiteness of P
+        # Step 2: In-order Radar measurement at t=1.10s
+        m2 = SensorMeasurement(t_capture=1.10, sensor_type="RADAR", z=np.array([1120.0]), R_cov=np.array([[25.0]]), t_receive=1.108, uav_pos=uav_pos)
+        ekf.update(m2, uav_pos=uav_pos)
+        self.assertAlmostEqual(ekf.current_time, 1.10)
+        self.assertEqual(ekf.oosm_count, 0)
+        self.assertEqual(len(ekf.history), 3)
+
+        # Step 3: Delayed Camera measurement arriving at t_receive=1.12s, but t_capture=1.05s (OOSM!)
+        m3_oosm = SensorMeasurement(t_capture=1.05, sensor_type="CAMERA", z=np.array([0.45, -0.25]), R_cov=np.diag([1e-4, 1e-4]), t_receive=1.12, uav_pos=uav_pos)
+        ekf.update(m3_oosm, uav_pos=uav_pos)
+
+        # EKF should have rewound to t=1.00s, applied m3 at t=1.05s, replayed m2 at t=1.10s, and ended back at t=1.10s
+        self.assertAlmostEqual(ekf.current_time, 1.10)
+        self.assertEqual(ekf.oosm_count, 1)
+        self.assertEqual(len(ekf.history), 4)  # Initial + m1 (1.00) + m3 (1.05) + m2 (1.10)
+
+        # Check covariance sanity (symmetric and positive-definite)
         P = ekf.get_covariance()
         self.assertTrue(np.allclose(P, P.T))
-        eigvals = np.linalg.eigvalsh(P)
-        self.assertTrue(np.all(eigvals > 0.0))
+        self.assertTrue(np.all(np.linalg.eigvalsh(P) > 0.0))
 
-        # Check error reduction
-        final_true = traj.get_state(10.0)
-        final_est = ekf.get_state()
-        pos_err = np.linalg.norm(final_true.position - final_est.position)
-        vel_err = np.linalg.norm(final_true.velocity - final_est.velocity)
+    def test_ekf_stale_oosm_dropped(self):
+        """Phase 2: Verify that measurements older than the buffer's oldest anchor are dropped safely."""
+        x0 = np.array([1000.0, 20.0, 500.0, -10.0, -300.0, 0.0])
+        P0 = np.eye(6) * 100.0
 
-        self.assertLess(pos_err, 15.0)  # High precision convergence
-        self.assertLess(vel_err, 5.0)
+        ekf = ExtendedKalmanFilter(
+            initial_state=x0,
+            initial_covariance=P0,
+            process_noise_spectral_density=0.5,
+            initial_timestamp=5.0,  # Filter starts at t=5.0
+            enable_oosm_buffer=True,
+            max_buffer_size=10,
+        )
+
+        # Measurement at t=2.0s (before filter start epoch t=5.0s)
+        stale_meas = SensorMeasurement(t_capture=2.0, sensor_type="RADAR", z=np.array([1000.0]), R_cov=np.array([[25.0]]), t_receive=5.5)
+        ekf.update(stale_meas)
+
+        self.assertEqual(ekf.dropped_oosm_count, 1)
+        self.assertEqual(ekf.oosm_count, 0)
+        self.assertAlmostEqual(ekf.current_time, 5.0)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,12 @@
 """
 Asynchronous Sensor Event Simulator based on Python heapq Priority Queue.
-Simulates non-synchronized, multi-rate sensor observation streams.
+Simulates non-synchronized, multi-rate sensor observation streams with realistic
+processor arrival queuing based on transmission and processing latencies.
 """
 
 from __future__ import annotations
 import heapq
+import copy
 from typing import List, Iterator, Optional, Callable
 import numpy as np
 
@@ -16,8 +18,8 @@ class AsyncSensorEventSimulator:
     """
     Event-driven priority queue simulator for multi-sensor airborne tracking.
 
-    Manages independent sensor clocks and interleaves events strictly in chronological
-    order using a min-heap structure (`heapq`).
+    Manages independent sensor clocks, transmission/processing delays, and interleaves
+    events strictly in processor arrival order (t_receive) using a min-heap structure (`heapq`).
     """
 
     def __init__(self, trajectory: ConstantVelocityTrajectory) -> None:
@@ -48,13 +50,14 @@ class AsyncSensorEventSimulator:
     ) -> int:
         """
         Populate the priority queue with all sensor measurements over [t_start, t_end].
+        Events are enqueued and ordered by processor arrival epoch (t_receive).
 
         Args:
             t_start: Simulation start epoch in seconds.
             t_end: Simulation end epoch in seconds.
             uav_position_fn: Optional function mapping t -> 3D UAV position vector.
                              If None, UAV is assumed stationary at [0, 0, 0].
-            jitter_std: Standard deviation of clock timing jitter (seconds). Default 0.0.
+            jitter_std: Additional external clock sampling jitter (seconds). Default 0.0.
 
         Returns:
             int: Total number of discrete events enqueued.
@@ -63,16 +66,14 @@ class AsyncSensorEventSimulator:
 
         for sensor, offset in self._sensors:
             dt = sensor.period
-            # Starting time for this sensor taking into account phase offset
             curr_t = t_start + offset
             while curr_t <= t_end:
-                # Add optional timestamp jitter
                 t_meas = curr_t
                 if jitter_std > 0.0:
                     t_meas += float(sensor.rng.normal(0.0, jitter_std))
                     t_meas = max(t_start, t_meas)
 
-                # Ground truth target position at measurement time
+                # Ground truth target position at capture epoch
                 tgt_state = self.trajectory.get_state(t_meas)
                 uav_pos = uav_position_fn(t_meas) if uav_position_fn is not None else np.zeros(3)
 
@@ -88,13 +89,28 @@ class AsyncSensorEventSimulator:
         return len(self._event_queue) > 0
 
     def pop_next(self) -> SensorMeasurement:
-        """Extracts the chronologically earliest sensor measurement."""
+        """Extracts the chronologically earliest arriving sensor measurement (min t_receive)."""
         if not self._event_queue:
             raise IndexError("pop from empty event queue")
         return heapq.heappop(self._event_queue)
 
+    def peek_next(self) -> Optional[SensorMeasurement]:
+        """Peeks at the next measurement without removing it."""
+        return self._event_queue[0] if self._event_queue else None
+
+    def clone_event_stream(self) -> List[SensorMeasurement]:
+        """
+        Returns a sorted list of all queued events (preserving arrival order)
+        without draining the internal queue.
+        """
+        copied_queue = copy.deepcopy(self._event_queue)
+        sorted_events = []
+        while copied_queue:
+            sorted_events.append(heapq.heappop(copied_queue))
+        return sorted_events
+
     def __iter__(self) -> Iterator[SensorMeasurement]:
-        """Provides an iterable stream over the chronologically sorted sensor events."""
+        """Provides an iterable stream over the chronologically sorted sensor events by arrival."""
         while self.has_next():
             yield self.pop_next()
 
