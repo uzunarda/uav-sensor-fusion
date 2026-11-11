@@ -1,7 +1,7 @@
 """
 Tab 3: System Diagnostics & Unit Test Runner Dashboard.
 Allows executing all test suites with a single click, showing pass/fail status badges,
-execution times, and full unittest output.
+execution times, and full unittest output in a diagnostic console layout.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import unittest
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -56,42 +56,47 @@ class TestRunnerView(QWidget):
         self.worker: Optional[TestRunnerWorker] = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(8)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
 
         # ---------------- Top Control Bar ----------------
         top_bar = QFrame()
         top_bar.setStyleSheet("""
             QFrame {
-                background-color: #0C1418;
-                border: 1px solid #1A2B35;
-                border-radius: 4px;
+                background-color: #090E14;
+                border: 1px solid #182634;
+                border-left: 3px solid #F59E0B;
                 padding: 4px 8px;
             }
         """)
         top_layout = QHBoxLayout(top_bar)
-        top_layout.setContentsMargins(4, 4, 4, 4)
+        top_layout.setContentsMargins(6, 4, 6, 4)
         top_layout.setSpacing(12)
 
-        self.btn_run_tests = QPushButton("▶ TÜM TESTLERİ KOŞTUR (RUN ALL TESTS)")
+        lbl_mod = QLabel("[MOD-03] SİSTEM TEŞHİS VE DOĞRULAMA:")
+        lbl_mod.setStyleSheet("color: #F59E0B; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold; border: none;")
+        top_layout.addWidget(lbl_mod)
+
+        self.btn_run_tests = QPushButton("[ > ] TÜM DOĞRULAMA TESTLERİNİ KOŞTUR (RUN SUITE)")
         self.btn_run_tests.setStyleSheet("""
             QPushButton {
-                background-color: #0077AA;
-                color: #FFFFFF;
-                border: 1px solid #0099DD;
-                border-radius: 4px;
-                padding: 6px 16px;
+                background-color: #0C2D42;
+                color: #38BDF8;
+                border: 1px solid #00B4D8;
+                border-left: 3px solid #00B4D8;
+                padding: 5px 14px;
                 font-family: 'Consolas', monospace;
                 font-weight: bold;
-                font-size: 11px;
+                font-size: 10px;
             }
             QPushButton:hover {
-                background-color: #0088CC;
+                background-color: #123E59;
+                color: #FFFFFF;
             }
             QPushButton:disabled {
-                background-color: #1A2B35;
-                color: #557788;
-                border: 1px solid #223344;
+                background-color: #111D26;
+                color: #4B6A7E;
+                border: 1px solid #1E3242;
             }
         """)
         self.btn_run_tests.clicked.connect(self._start_tests)
@@ -100,22 +105,20 @@ class TestRunnerView(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setVisible(False)
-        self.progress_bar.setFixedHeight(12)
+        self.progress_bar.setFixedHeight(10)
         self.progress_bar.setStyleSheet("""
             QProgressBar {
-                background-color: #111A20;
-                border: 1px solid #1E2E38;
-                border-radius: 6px;
+                background-color: #0C131B;
+                border: 1px solid #1E3246;
             }
             QProgressBar::chunk {
-                background-color: #00A2FF;
-                border-radius: 6px;
+                background-color: #38BDF8;
             }
         """)
         top_layout.addWidget(self.progress_bar)
 
-        self.lbl_summary = QLabel("DURUM: Hazır. Testleri başlatmak için butona basınız.")
-        self.lbl_summary.setStyleSheet("color: #00A2FF; font-family: 'Consolas', monospace; font-size: 11px;")
+        self.lbl_summary = QLabel("DURUM: [HAZIR] // Matematiksel Doğrulama Paketi Bekleniyor")
+        self.lbl_summary.setStyleSheet("color: #38BDF8; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
         top_layout.addWidget(self.lbl_summary)
 
         top_layout.addStretch()
@@ -127,31 +130,31 @@ class TestRunnerView(QWidget):
 
         # Left: Test Items List
         left_frame = QFrame()
-        left_frame.setStyleSheet("background-color: #0A0F12; border: 1px solid #16242C; border-radius: 4px;")
+        left_frame.setStyleSheet("background-color: #070B10; border: 1px solid #16222E;")
         lbox = QVBoxLayout(left_frame)
-        lbox.setContentsMargins(6, 6, 6, 6)
+        lbox.setContentsMargins(8, 8, 8, 8)
+        lbox.setSpacing(6)
 
-        lbl_list_title = QLabel("SİSTEM BİRİM VE ENTEGRASYON TESTLERİ (9 TEST)")
-        lbl_list_title.setStyleSheet("color: #FFB300; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold; margin-bottom: 4px;")
+        lbl_list_title = QLabel("[TEŞHİS-01] BİRİM VE ENTEGRASYON DOĞRULAMA PAKETLERİ")
+        lbl_list_title.setStyleSheet("color: #F59E0B; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; letter-spacing: 0.6px; border: none;")
         lbox.addWidget(lbl_list_title)
 
         self.test_list = QListWidget()
         self.test_list.setStyleSheet("""
             QListWidget {
-                background-color: #070B0E;
-                color: #DDEEFA;
-                border: 1px solid #16242C;
-                border-radius: 3px;
+                background-color: #06090D;
+                color: #C4D6E5;
+                border: 1px solid #16222E;
                 font-family: 'Consolas', monospace;
-                font-size: 11px;
+                font-size: 10px;
                 padding: 4px;
             }
             QListWidget::item {
                 padding: 6px 8px;
-                border-bottom: 1px solid #101820;
+                border-bottom: 1px solid #101A24;
             }
             QListWidget::item:hover {
-                background-color: #111C24;
+                background-color: #0E1822;
             }
         """)
         lbox.addWidget(self.test_list)
@@ -159,24 +162,24 @@ class TestRunnerView(QWidget):
 
         # Right: Terminal Output Console
         right_frame = QFrame()
-        right_frame.setStyleSheet("background-color: #0A0F12; border: 1px solid #16242C; border-radius: 4px;")
+        right_frame.setStyleSheet("background-color: #070B10; border: 1px solid #16222E;")
         rbox = QVBoxLayout(right_frame)
-        rbox.setContentsMargins(6, 6, 6, 6)
+        rbox.setContentsMargins(8, 8, 8, 8)
+        rbox.setSpacing(6)
 
-        lbl_console_title = QLabel("TEST ÇIKTISI VE AYRINTILI TEŞHİS KONSOLU")
-        lbl_console_title.setStyleSheet("color: #00FF66; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold; margin-bottom: 4px;")
+        lbl_console_title = QLabel("[KONSOL-01] TEST ÇIKTISI VE ANALİTİK DOĞRULAMA GÜNLÜĞÜ")
+        lbl_console_title.setStyleSheet("color: #10B981; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; letter-spacing: 0.6px; border: none;")
         rbox.addWidget(lbl_console_title)
 
         self.console_output = QTextEdit()
         self.console_output.setReadOnly(True)
         self.console_output.setStyleSheet("""
             QTextEdit {
-                background-color: #05080A;
-                color: #A0C0B0;
-                border: 1px solid #16242C;
-                border-radius: 3px;
+                background-color: #05080C;
+                color: #9FB6C8;
+                border: 1px solid #16222E;
                 font-family: 'Consolas', monospace;
-                font-size: 11px;
+                font-size: 10px;
                 padding: 6px;
             }
         """)
@@ -188,7 +191,6 @@ class TestRunnerView(QWidget):
 
         layout.addWidget(main_splitter, stretch=1)
 
-        # Pre-fill standard tests list
         self._populate_static_test_list()
 
     def _populate_static_test_list(self) -> None:
@@ -207,16 +209,16 @@ class TestRunnerView(QWidget):
 
         self.test_list.clear()
         for test_id, desc, status in test_definitions:
-            item_text = f"[{status}]  {test_id}\n     └─ {desc}"
+            item_text = f"[{status}]  {test_id}\n     +-- {desc}"
             item = QListWidgetItem(item_text)
-            item.setForeground(QColor("#7A9CAE"))
+            item.setForeground(QColor("#7FA0B8"))
             self.test_list.addItem(item)
 
     def _start_tests(self) -> None:
         self.btn_run_tests.setEnabled(False)
         self.progress_bar.setVisible(True)
-        self.lbl_summary.setText("DURUM: Testler koşturuluyor...")
-        self.lbl_summary.setStyleSheet("color: #FFCC00; font-family: 'Consolas', monospace; font-size: 11px;")
+        self.lbl_summary.setText("DURUM: [ÇALIŞIYOR] // Birim testleri koşturuluyor...")
+        self.lbl_summary.setStyleSheet("color: #F59E0B; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
         self.console_output.setText(">> python -m unittest discover tests başlatıldı...\n")
 
         self.worker = TestRunnerWorker()
@@ -229,20 +231,19 @@ class TestRunnerView(QWidget):
         self.console_output.setText(output)
 
         if success:
-            self.lbl_summary.setText(f"DURUM: MÜKEMMEL! Tüm testler başarıyla geçti ({passed}/{total} GEÇTİ).")
-            self.lbl_summary.setStyleSheet("color: #00FF66; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold;")
+            self.lbl_summary.setText(f"DURUM: [BAŞARILI] // Tüm doğrulama testleri geçti ({passed}/{total} PASS).")
+            self.lbl_summary.setStyleSheet("color: #10B981; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
         else:
-            self.lbl_summary.setText(f"DURUM: UYARI! Bazı testlerde hata oluştu ({passed}/{total} GEÇTİ).")
-            self.lbl_summary.setStyleSheet("color: #FF3333; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold;")
+            self.lbl_summary.setText(f"DURUM: [HATA] // Bazı testlerde uyuşmazlık tespit edildi ({passed}/{total} PASS).")
+            self.lbl_summary.setStyleSheet("color: #EF4444; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
 
-        # Update test list items with green PASS badge
         for i in range(self.test_list.count()):
             item = self.test_list.item(i)
             cur_text = item.text()
             if success:
                 new_text = cur_text.replace("[HAZIR]", "[GEÇTİ]").replace("[UYARI]", "[GEÇTİ]")
                 item.setText(new_text)
-                item.setForeground(QColor("#00FF66"))
+                item.setForeground(QColor("#10B981"))
             else:
                 new_text = cur_text.replace("[HAZIR]", "[TEST]").replace("[GEÇTİ]", "[TEST]")
                 item.setText(new_text)

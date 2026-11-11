@@ -2,7 +2,7 @@
 Tactical Playback Control Bar for UAV Sensor Fusion GUI.
 Provides Play/Pause/Reset actions, Speed Multipliers (0.5x, 1x, 2x, Max),
 Radio Mode Switcher (Mode A: Ideal, Mode B: Naive, Mode C: Rollback/Replay),
-and interactive Timeline Scrubbing Slider.
+and interactive Timeline Scrubbing Slider in a sharp tactical deck layout.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from src.gui.worker import SimulationFrame
 
 class PlaybackControlBar(QWidget):
     """
-    Bottom control dock containing timeline slider and simulation management controls.
+    Bottom tactical control deck containing timeline slider and simulation management controls.
     """
     play_requested = pyqtSignal()
     pause_requested = pyqtSignal()
@@ -41,127 +41,149 @@ class PlaybackControlBar(QWidget):
         self.sim_duration = float(sim_duration)
         self._is_user_scrubbing = False
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(8, 4, 8, 8)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        deck_frame = QFrame()
+        deck_frame.setStyleSheet("""
+            QFrame {
+                background-color: #090E14;
+                border: 1px solid #182634;
+                border-top: 2px solid #1E3246;
+            }
+        """)
+        main_layout = QVBoxLayout(deck_frame)
+        main_layout.setContentsMargins(10, 6, 10, 6)
         main_layout.setSpacing(6)
 
         # ---------------- 1. Timeline Slider Row ----------------
         slider_row = QHBoxLayout()
         slider_row.setSpacing(10)
 
-        self.lbl_time_current = QLabel("00:00.0 s")
-        self.lbl_time_current.setStyleSheet("color: #00FF66; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold;")
+        lbl_epoch_tag = QLabel("ZAMAN EKSENİ [EPOCH]:")
+        lbl_epoch_tag.setStyleSheet("color: #68899E; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
+        slider_row.addWidget(lbl_epoch_tag)
+
+        self.lbl_time_current = QLabel("T+00.00 s")
+        self.lbl_time_current.setStyleSheet("color: #10B981; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold; border: none;")
         slider_row.addWidget(self.lbl_time_current)
 
         self.time_slider = QSlider(Qt.Orientation.Horizontal)
         self.time_slider.setRange(0, int(self.sim_duration * 100))  # 10ms resolution
         self.time_slider.setValue(0)
         self.time_slider.setStyleSheet("""
+            QSlider {
+                border: none;
+                background: transparent;
+            }
             QSlider::groove:horizontal {
                 height: 6px;
-                background: #111A20;
-                border: 1px solid #1E2E38;
-                border-radius: 3px;
+                background: #0F1822;
+                border: 1px solid #1E3042;
             }
             QSlider::sub-page:horizontal {
-                background: #00FF66;
-                border-radius: 3px;
+                background: #10B981;
             }
             QSlider::handle:horizontal {
-                background: #FFFFFF;
-                border: 2px solid #00FF66;
-                width: 14px;
-                margin-top: -5px;
-                margin-bottom: -5px;
-                border-radius: 7px;
+                background: #E2EEF8;
+                border: 1px solid #10B981;
+                width: 10px;
+                margin-top: -4px;
+                margin-bottom: -4px;
             }
             QSlider::handle:horizontal:hover {
-                background: #00FF66;
+                background: #10B981;
             }
         """)
         self.time_slider.sliderPressed.connect(self._on_slider_pressed)
         self.time_slider.sliderReleased.connect(self._on_slider_released)
         self.time_slider.sliderMoved.connect(self._on_slider_moved)
-        slider_row.addWidget(self.time_slider)
+        slider_row.addWidget(self.time_slider, stretch=1)
 
-        self.lbl_time_total = QLabel(f"{self.sim_duration:04.1f} s")
-        self.lbl_time_total.setStyleSheet("color: #6C8A99; font-family: 'Consolas', monospace; font-size: 11px;")
+        self.lbl_time_total = QLabel(f"T+{self.sim_duration:05.2f} s")
+        self.lbl_time_total.setStyleSheet("color: #68899E; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
         slider_row.addWidget(self.lbl_time_total)
 
         main_layout.addLayout(slider_row)
 
         # ---------------- 2. Control Toolbar Row ----------------
         toolbar_row = QHBoxLayout()
-        toolbar_row.setSpacing(16)
+        toolbar_row.setSpacing(12)
 
         # Play / Pause Button
-        self.btn_play_pause = QPushButton("▶ BAŞLAT (PLAY)")
+        self.btn_play_pause = QPushButton("[ > ] SİMÜLASYONU BAŞLAT")
         self.btn_play_pause.setCheckable(True)
         self.btn_play_pause.setStyleSheet("""
             QPushButton {
-                background-color: #00AA44;
-                color: #FFFFFF;
-                border: 1px solid #00DD55;
-                border-radius: 4px;
-                padding: 6px 14px;
+                background-color: #0D3B2A;
+                color: #34D399;
+                border: 1px solid #10B981;
+                border-left: 3px solid #10B981;
+                padding: 5px 14px;
                 font-family: 'Consolas', monospace;
                 font-weight: bold;
-                font-size: 11px;
+                font-size: 10px;
+                letter-spacing: 0.5px;
             }
             QPushButton:hover {
-                background-color: #00CC55;
+                background-color: #134E38;
+                color: #FFFFFF;
             }
             QPushButton:checked {
-                background-color: #CC7A00;
-                border: 1px solid #FFAA00;
+                background-color: #4A2C06;
+                color: #FBBF24;
+                border: 1px solid #F59E0B;
+                border-left: 3px solid #F59E0B;
             }
         """)
         self.btn_play_pause.clicked.connect(self._on_play_pause_clicked)
         toolbar_row.addWidget(self.btn_play_pause)
 
         # Reset Button
-        self.btn_reset = QPushButton("⏹ SIFIRLA (RESET)")
+        self.btn_reset = QPushButton("[ 0 ] SIFIRLA")
         self.btn_reset.setStyleSheet("""
             QPushButton {
-                background-color: #222E36;
-                color: #DDEEFA;
-                border: 1px solid #364B59;
-                border-radius: 4px;
-                padding: 6px 12px;
+                background-color: #101923;
+                color: #9FB6C8;
+                border: 1px solid #223548;
+                padding: 5px 12px;
                 font-family: 'Consolas', monospace;
                 font-weight: bold;
-                font-size: 11px;
+                font-size: 10px;
             }
             QPushButton:hover {
-                background-color: #2E3E49;
+                background-color: #182635;
+                color: #FFFFFF;
+                border: 1px solid #38BDF8;
             }
         """)
         self.btn_reset.clicked.connect(self._on_reset_clicked)
         toolbar_row.addWidget(self.btn_reset)
 
         # Speed Selector
-        lbl_speed = QLabel("HIZ:")
-        lbl_speed.setStyleSheet("color: #8CAAB9; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold;")
+        lbl_speed = QLabel("KOŞUM HIZI:")
+        lbl_speed.setStyleSheet("color: #7FA0B8; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
         toolbar_row.addWidget(lbl_speed)
 
         self.combo_speed = QComboBox()
-        self.combo_speed.addItems(["0.5x (Yavaş)", "1.0x (Canlı)", "2.0x (Hızlı)", "Azami (Max Speed)"])
+        self.combo_speed.addItems(["0.5x [YAVAŞ ANALİZ]", "1.0x [GERÇEK ZAMANLI]", "2.0x [HIZLANDIRILMIŞ]", "MAX [AZAMİ HIZ]"])
         self.combo_speed.setCurrentIndex(1)  # Default 1.0x
         self.combo_speed.setStyleSheet("""
             QComboBox {
-                background-color: #111A20;
-                color: #00FF66;
-                border: 1px solid #1E2E38;
-                border-radius: 4px;
+                background-color: #0C131B;
+                color: #38BDF8;
+                border: 1px solid #1E3246;
                 padding: 4px 8px;
                 font-family: 'Consolas', monospace;
                 font-weight: bold;
-                font-size: 11px;
+                font-size: 10px;
             }
             QComboBox QAbstractItemView {
-                background-color: #111A20;
-                color: #00FF66;
-                selection-background-color: #1E3B2B;
+                background-color: #0C131B;
+                color: #38BDF8;
+                selection-background-color: #162B3D;
+                border: 1px solid #1E3246;
             }
         """)
         self.combo_speed.currentIndexChanged.connect(self._on_speed_changed)
@@ -170,43 +192,43 @@ class PlaybackControlBar(QWidget):
         # Separator Line
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setStyleSheet("color: #203340;")
+        sep.setStyleSheet("color: #1C2D3E;")
         toolbar_row.addWidget(sep)
 
         # Simulation Mode Radio Selector
-        lbl_mode = QLabel("FÜZYON MODU:")
-        lbl_mode.setStyleSheet("color: #FFB300; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold;")
+        lbl_mode = QLabel("FÜZYON MİMARİSİ:")
+        lbl_mode.setStyleSheet("color: #F59E0B; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
         toolbar_row.addWidget(lbl_mode)
 
         self.radio_group = QButtonGroup(self)
-        self.rb_mode_a = QRadioButton("Mod A (İdeal)")
-        self.rb_mode_b = QRadioButton("Mod B (Naive EKF)")
-        self.rb_mode_c = QRadioButton("Mod C (Rollback/OOSM Destekli)")
+        self.rb_mode_a = QRadioButton("MOD A [İDEAL / 0ms]")
+        self.rb_mode_b = QRadioButton("MOD B [NAIVE EKF]")
+        self.rb_mode_c = QRadioButton("MOD C [OOSM ROLLBACK/REPLAY]")
         self.rb_mode_c.setChecked(True)  # Default Mode C
 
         radio_style = """
             QRadioButton {
-                color: #C0D8E6;
+                color: #C4D6E5;
                 font-family: 'Consolas', monospace;
-                font-size: 11px;
-                spacing: 5px;
+                font-size: 10px;
+                font-weight: bold;
+                spacing: 6px;
+                border: none;
             }
             QRadioButton::indicator:checked {
-                background-color: #00FF66;
-                border: 2px solid #FFFFFF;
-                border-radius: 6px;
-                width: 10px;
-                height: 10px;
+                background-color: #10B981;
+                border: 1px solid #FFFFFF;
+                width: 9px;
+                height: 9px;
             }
             QRadioButton::indicator:unchecked {
-                background-color: #1A2832;
-                border: 1px solid #3B5466;
-                border-radius: 6px;
-                width: 10px;
-                height: 10px;
+                background-color: #0F1720;
+                border: 1px solid #354E66;
+                width: 9px;
+                height: 9px;
             }
         """
-        for rb, mode_id in [(self.rb_mode_a, "MODE_A"), (self.rb_mode_b, "MODE_B"), (self.rb_mode_c, "MODE_C")]:
+        for rb in (self.rb_mode_a, self.rb_mode_b, self.rb_mode_c):
             rb.setStyleSheet(radio_style)
             self.radio_group.addButton(rb)
             toolbar_row.addWidget(rb)
@@ -215,6 +237,7 @@ class PlaybackControlBar(QWidget):
 
         toolbar_row.addStretch()
         main_layout.addLayout(toolbar_row)
+        outer_layout.addWidget(deck_frame)
 
     # -------------------------------------------------------------------------
     # Event Handlers
@@ -222,25 +245,25 @@ class PlaybackControlBar(QWidget):
 
     def _on_play_pause_clicked(self) -> None:
         if self.btn_play_pause.isChecked():
-            self.btn_play_pause.setText("⏸ DURAKLAT (PAUSE)")
+            self.btn_play_pause.setText("[ || ] SİMÜLASYONU DURAKLAT")
             self.play_requested.emit()
         else:
-            self.btn_play_pause.setText("▶ BAŞLAT (PLAY)")
+            self.btn_play_pause.setText("[ > ] SİMÜLASYONU BAŞLAT")
             self.pause_requested.emit()
 
     def set_playing_state(self, is_playing: bool) -> None:
         """Updates button text when playback state changes externally."""
         self.btn_play_pause.setChecked(is_playing)
         if is_playing:
-            self.btn_play_pause.setText("⏸ DURAKLAT (PAUSE)")
+            self.btn_play_pause.setText("[ || ] SİMÜLASYONU DURAKLAT")
         else:
-            self.btn_play_pause.setText("▶ BAŞLAT (PLAY)")
+            self.btn_play_pause.setText("[ > ] SİMÜLASYONU BAŞLAT")
 
     def _on_reset_clicked(self) -> None:
         self.btn_play_pause.setChecked(False)
-        self.btn_play_pause.setText("▶ BAŞLAT (PLAY)")
+        self.btn_play_pause.setText("[ > ] SİMÜLASYONU BAŞLAT")
         self.time_slider.setValue(0)
-        self.lbl_time_current.setText("00:00.0 s")
+        self.lbl_time_current.setText("T+00.00 s")
         self.reset_requested.emit()
 
     def _on_speed_changed(self, index: int) -> None:
@@ -265,7 +288,7 @@ class PlaybackControlBar(QWidget):
 
     def _on_slider_moved(self, value: int) -> None:
         target_time = value / 100.0
-        self.lbl_time_current.setText(f"{target_time:04.1f} s")
+        self.lbl_time_current.setText(f"T+{target_time:05.2f} s")
         self.seek_requested.emit(target_time)
 
     def update_frame(self, frame: SimulationFrame) -> None:
@@ -273,4 +296,4 @@ class PlaybackControlBar(QWidget):
         if not self._is_user_scrubbing:
             slider_val = int(frame.timestamp * 100)
             self.time_slider.setValue(slider_val)
-            self.lbl_time_current.setText(f"{frame.timestamp:04.1f} s")
+            self.lbl_time_current.setText(f"T+{frame.timestamp:05.2f} s")

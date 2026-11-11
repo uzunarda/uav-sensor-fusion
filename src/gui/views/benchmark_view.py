@@ -59,86 +59,89 @@ class BenchmarkView(QWidget):
         self.worker: Optional[BenchmarkWorker] = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(8)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
 
         # ---------------- Top Control Bar ----------------
         top_bar = QFrame()
         top_bar.setStyleSheet("""
             QFrame {
-                background-color: #0C1418;
-                border: 1px solid #1A2B35;
-                border-radius: 4px;
+                background-color: #090E14;
+                border: 1px solid #182634;
+                border-left: 3px solid #38BDF8;
                 padding: 4px 8px;
             }
         """)
         top_layout = QHBoxLayout(top_bar)
-        top_layout.setContentsMargins(4, 4, 4, 4)
+        top_layout.setContentsMargins(6, 4, 6, 4)
         top_layout.setSpacing(12)
 
-        self.btn_run = QPushButton("▶ KIYASLAMAYI ÇALIŞTIR (RUN BENCHMARK)")
+        lbl_mod = QLabel("[MOD-02] AŞAMA 2 ANALİTİK BENCHMARK:")
+        lbl_mod.setStyleSheet("color: #38BDF8; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold; border: none;")
+        top_layout.addWidget(lbl_mod)
+
+        self.btn_run = QPushButton("[ > ] KIYASLAMAYI ÇALIŞTIR (RUN BENCHMARK)")
         self.btn_run.setStyleSheet("""
             QPushButton {
-                background-color: #008844;
-                color: #FFFFFF;
-                border: 1px solid #00BB55;
-                border-radius: 4px;
-                padding: 6px 16px;
+                background-color: #0D3B2A;
+                color: #34D399;
+                border: 1px solid #10B981;
+                border-left: 3px solid #10B981;
+                padding: 5px 14px;
                 font-family: 'Consolas', monospace;
                 font-weight: bold;
-                font-size: 11px;
+                font-size: 10px;
             }
             QPushButton:hover {
-                background-color: #00AA55;
+                background-color: #134E38;
+                color: #FFFFFF;
             }
             QPushButton:disabled {
-                background-color: #22332A;
-                color: #557766;
-                border: 1px solid #33443A;
+                background-color: #121E1A;
+                color: #4A6B5D;
+                border: 1px solid #1E332A;
             }
         """)
         self.btn_run.clicked.connect(self._start_benchmark)
         top_layout.addWidget(self.btn_run)
 
-        lbl_dur = QLabel("SÜRE:")
-        lbl_dur.setStyleSheet("color: #7A9CAE; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold;")
+        lbl_dur = QLabel("ANALİZ SÜRESİ:")
+        lbl_dur.setStyleSheet("color: #7FA0B8; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
         top_layout.addWidget(lbl_dur)
 
         self.combo_dur = QComboBox()
-        self.combo_dur.addItems(["10.0 saniye", "20.0 saniye", "30.0 saniye"])
+        self.combo_dur.addItems(["10.0 SANİYE", "20.0 SANİYE [STANDART]", "30.0 SANİYE"])
         self.combo_dur.setCurrentIndex(1)
         self.combo_dur.setStyleSheet("""
             QComboBox {
-                background-color: #111A20;
-                color: #00FF66;
-                border: 1px solid #1E2E38;
-                border-radius: 4px;
+                background-color: #0C131B;
+                color: #38BDF8;
+                border: 1px solid #1E3246;
                 padding: 4px 8px;
                 font-family: 'Consolas', monospace;
-                font-size: 11px;
+                font-weight: bold;
+                font-size: 10px;
             }
         """)
         top_layout.addWidget(self.combo_dur)
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)  # Indeterminate spinner
+        self.progress_bar.setRange(0, 0)
         self.progress_bar.setVisible(False)
-        self.progress_bar.setFixedHeight(12)
+        self.progress_bar.setFixedHeight(10)
         self.progress_bar.setStyleSheet("""
             QProgressBar {
-                background-color: #111A20;
-                border: 1px solid #1E2E38;
-                border-radius: 6px;
+                background-color: #0C131B;
+                border: 1px solid #1E3246;
             }
             QProgressBar::chunk {
-                background-color: #00FF66;
-                border-radius: 6px;
+                background-color: #10B981;
             }
         """)
         top_layout.addWidget(self.progress_bar)
 
-        self.lbl_status = QLabel("DURUM: Hazır. Kıyaslamayı başlatmak için butona basınız.")
-        self.lbl_status.setStyleSheet("color: #00FF66; font-family: 'Consolas', monospace; font-size: 11px;")
+        self.lbl_status = QLabel("DURUM: [HAZIR] // 3 Modlu Analitik Kıyaslama Bekleniyor")
+        self.lbl_status.setStyleSheet("color: #10B981; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
         top_layout.addWidget(self.lbl_status)
 
         top_layout.addStretch()
@@ -146,23 +149,23 @@ class BenchmarkView(QWidget):
 
         # ---------------- Main Splitter: Left Table vs Right Graphs ----------------
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_splitter.setHandleWidth(5)
+        main_splitter.setHandleWidth(4)
 
-        # Left: Metrics Comparison Table (Fixed Width for Perfect Proportion)
+        # Left: Metrics Comparison Table
         table_container = QFrame()
         table_container.setFixedWidth(560)
-        table_container.setStyleSheet("background-color: #0A0F12; border: 1px solid #16242C; border-radius: 4px;")
+        table_container.setStyleSheet("background-color: #070B10; border: 1px solid #16222E;")
         tbox = QVBoxLayout(table_container)
         tbox.setContentsMargins(8, 8, 8, 8)
         tbox.setSpacing(6)
 
-        table_title = QLabel("PERFORMANS VE BAŞARIM METRİKLERİ TABLOSU")
-        table_title.setStyleSheet("color: #FFB300; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold; margin-bottom: 2px;")
+        table_title = QLabel("[TABLO-01] PERFORMANS VE BAŞARIM METRİKLERİ MATRİSİ")
+        table_title.setStyleSheet("color: #F59E0B; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; letter-spacing: 0.6px; border: none;")
         tbox.addWidget(table_title)
 
         self.table = QTableWidget()
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Metrik / Parametre", "Mod A (İdeal)", "Mod B (Naive)", "Mod C (Rollback)"])
+        self.table.setHorizontalHeaderLabels(["METRİK / PARAMETRE", "MOD A [İDEAL]", "MOD B [NAIVE]", "MOD C [ROLLBACK]"])
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
@@ -170,30 +173,32 @@ class BenchmarkView(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(1, 95)
         self.table.setColumnWidth(2, 95)
-        self.table.setColumnWidth(3, 115)
+        self.table.setColumnWidth(3, 118)
 
         self.table.setStyleSheet("""
             QTableWidget {
-                background-color: #070B0E;
+                background-color: #06090D;
                 color: #C0D8E6;
-                gridline-color: #16242C;
-                border: none;
+                gridline-color: #14202C;
+                border: 1px solid #16222E;
                 font-family: 'Consolas', monospace;
-                font-size: 11px;
+                font-size: 10px;
             }
             QHeaderView::section {
-                background-color: #101820;
-                color: #00FF66;
-                padding: 6px 4px;
-                border: 1px solid #16242C;
+                background-color: #0D151E;
+                color: #7FA0B8;
+                padding: 5px 4px;
+                border: none;
+                border-right: 1px solid #16222E;
+                border-bottom: 1px solid #1E3042;
                 font-weight: bold;
-                font-size: 11px;
+                font-size: 9px;
             }
             QTableWidget::item {
-                padding: 5px 4px;
+                padding: 4px 4px;
             }
             QTableWidget::item:selected {
-                background-color: #162C3A;
+                background-color: #132738;
             }
         """)
         tbox.addWidget(self.table)
@@ -201,35 +206,35 @@ class BenchmarkView(QWidget):
 
         # Right: Real-Time Comparative Graphs
         graph_container = QFrame()
-        graph_container.setStyleSheet("background-color: #0A0F12; border: 1px solid #16242C; border-radius: 4px;")
+        graph_container.setStyleSheet("background-color: #070B10; border: 1px solid #16222E;")
         gbox = QVBoxLayout(graph_container)
         gbox.setContentsMargins(6, 6, 6, 6)
         gbox.setSpacing(6)
 
         # Plot 1: 3D Position Error (Mode A vs Mode B vs Mode C)
-        self.plot_pos_err = pg.PlotWidget(title="3B Konum Hatası Karşılaştırması (m)")
-        self.plot_pos_err.setBackground("#050A0E")
-        self.plot_pos_err.showGrid(x=True, y=True, alpha=0.15)
-        self.plot_pos_err.getAxis("bottom").setLabel("Zaman", units="s", color="#5C8A9F")
-        self.plot_pos_err.getAxis("left").setLabel("Konum Hatası", units="m", color="#5C8A9F")
+        self.plot_pos_err = pg.PlotWidget(title="[GRAFİK-01] 3B KONUM HATASI KARŞILAŞTIRMASI (m)")
+        self.plot_pos_err.setBackground("#05080C")
+        self.plot_pos_err.showGrid(x=True, y=True, alpha=0.14)
+        self.plot_pos_err.getAxis("bottom").setLabel("ZAMAN (EPOCH)", units="s", color="#68899E")
+        self.plot_pos_err.getAxis("left").setLabel("KONUM HATASI", units="m", color="#68899E")
         self.plot_pos_err.addLegend(offset=(10, 10))
 
-        self.curve_b_pos = self.plot_pos_err.plot(name="Mod B (Naive)", pen=pg.mkPen("#E74C3C", width=1.8))
-        self.curve_c_pos = self.plot_pos_err.plot(name="Mod C (Rollback)", pen=pg.mkPen("#2ECC71", width=2.0))
-        self.curve_a_pos = self.plot_pos_err.plot(name="Mod A (İdeal)", pen=pg.mkPen("#3498DB", width=1.5, style=Qt.PenStyle.DashLine))
+        self.curve_b_pos = self.plot_pos_err.plot(name="MOD B [NAIVE]", pen=pg.mkPen("#EF4444", width=1.8))
+        self.curve_c_pos = self.plot_pos_err.plot(name="MOD C [ROLLBACK]", pen=pg.mkPen("#10B981", width=2.0))
+        self.curve_a_pos = self.plot_pos_err.plot(name="MOD A [İDEAL]", pen=pg.mkPen("#38BDF8", width=1.5, style=Qt.PenStyle.DashLine))
         gbox.addWidget(self.plot_pos_err)
 
         # Plot 2: 3D Velocity Error
-        self.plot_vel_err = pg.PlotWidget(title="3B Hız Hatası ve Yakınsama (m/s)")
-        self.plot_vel_err.setBackground("#050A0E")
-        self.plot_vel_err.showGrid(x=True, y=True, alpha=0.15)
-        self.plot_vel_err.getAxis("bottom").setLabel("Zaman", units="s", color="#5C8A9F")
-        self.plot_vel_err.getAxis("left").setLabel("Hız Hatası", units="m/s", color="#5C8A9F")
+        self.plot_vel_err = pg.PlotWidget(title="[GRAFİK-02] 3B HIZ HATASI VE YAKINSAMA PROFİLİ (m/s)")
+        self.plot_vel_err.setBackground("#05080C")
+        self.plot_vel_err.showGrid(x=True, y=True, alpha=0.14)
+        self.plot_vel_err.getAxis("bottom").setLabel("ZAMAN (EPOCH)", units="s", color="#68899E")
+        self.plot_vel_err.getAxis("left").setLabel("HIZ HATASI", units="m/s", color="#68899E")
         self.plot_vel_err.addLegend(offset=(10, 10))
 
-        self.curve_b_vel = self.plot_vel_err.plot(name="Mod B (Naive)", pen=pg.mkPen("#E74C3C", width=1.8))
-        self.curve_c_vel = self.plot_vel_err.plot(name="Mod C (Rollback)", pen=pg.mkPen("#2ECC71", width=2.0))
-        self.curve_a_vel = self.plot_vel_err.plot(name="Mod A (İdeal)", pen=pg.mkPen("#3498DB", width=1.5, style=Qt.PenStyle.DashLine))
+        self.curve_b_vel = self.plot_vel_err.plot(name="MOD B [NAIVE]", pen=pg.mkPen("#EF4444", width=1.8))
+        self.curve_c_vel = self.plot_vel_err.plot(name="MOD C [ROLLBACK]", pen=pg.mkPen("#10B981", width=2.0))
+        self.curve_a_vel = self.plot_vel_err.plot(name="MOD A [İDEAL]", pen=pg.mkPen("#38BDF8", width=1.5, style=Qt.PenStyle.DashLine))
         gbox.addWidget(self.plot_vel_err)
 
         main_splitter.addWidget(graph_container)
@@ -251,18 +256,16 @@ class BenchmarkView(QWidget):
             ("Toplam 3B Konum RMSE (m)", "3.119 m", "4.241 m", "3.572 m"),
             ("Kalıcı Durum 3B Hız RMSE (m/s)", "0.918 m/s", "1.111 m/s", "1.108 m/s"),
             ("Toplam 3B Hız RMSE (m/s)", "3.859 m/s", "3.668 m/s", "3.701 m/s"),
-            ("İşlenen OOSM Sayısı", "0 (Gecikmesiz)", "0 (Yönetilemez)", "127 Olay"),
+            ("İşlenen OOSM Sayısı", "0 [GECİKMESİZ]", "0 [TELAFİSİZ]", "127 OLAY"),
             ("Atılan (Dropped) OOSM", "0", "0", "0"),
-            ("Mod B (Naive)'ye Göre İyileşme", "-", "Referans", "%22.6 İYİLEŞME"),
+            ("Mod B (Naive)'ye Göre İyileşme", "-", "REFERANS", "%22.6 İYİLEŞME"),
         ]
         self._set_table_rows(rows)
 
-        # Populate Baseline Graphs with analytical convergence traces
         t = np.linspace(0.0, 20.0, 350)
         decay = np.exp(-t / 1.8)
         rng = np.random.default_rng(42)
 
-        # 3D Position Error Curves
         pos_b = np.clip(35.0 * decay + 3.46 + rng.normal(0, 0.40, len(t)), 0.5, 90.0)
         pos_c = np.clip(35.0 * decay + 2.68 + rng.normal(0, 0.32, len(t)), 0.5, 90.0)
         pos_a = np.clip(35.0 * decay + 1.95 + rng.normal(0, 0.22, len(t)), 0.3, 90.0)
@@ -271,7 +274,6 @@ class BenchmarkView(QWidget):
         self.curve_c_pos.setData(t, pos_c)
         self.curve_a_pos.setData(t, pos_a)
 
-        # 3D Velocity Error Curves
         vel_b = np.clip(14.0 * decay + 1.11 + rng.normal(0, 0.14, len(t)), 0.1, 35.0)
         vel_c = np.clip(14.0 * decay + 1.10 + rng.normal(0, 0.13, len(t)), 0.1, 35.0)
         vel_a = np.clip(14.0 * decay + 0.92 + rng.normal(0, 0.11, len(t)), 0.1, 35.0)
@@ -288,19 +290,16 @@ class BenchmarkView(QWidget):
             item_b = QTableWidgetItem(val_b)
             item_c = QTableWidgetItem(val_c)
 
-            # Alignment
             item_lbl.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             item_a.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item_b.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item_c.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            # Styling
             item_lbl.setForeground(QColor("#C0D8E6"))
-            item_a.setForeground(QColor("#3498DB"))
-            item_b.setForeground(QColor("#E74C3C"))
-            item_c.setForeground(QColor("#2ECC71"))
+            item_a.setForeground(QColor("#38BDF8"))
+            item_b.setForeground(QColor("#EF4444"))
+            item_c.setForeground(QColor("#10B981"))
 
-            # Highlight specific summary rows
             if "İyileşme" in metric_name or "Kalıcı Durum 3B Konum" in metric_name:
                 font = QFont("Consolas", 10, QFont.Weight.Bold)
                 item_lbl.setFont(font)
@@ -324,8 +323,8 @@ class BenchmarkView(QWidget):
 
         self.btn_run.setEnabled(False)
         self.progress_bar.setVisible(True)
-        self.lbl_status.setText(f"DURUM: Simülasyon {dur:.0f}s boyunca 3 modda koşturuluyor...")
-        self.lbl_status.setStyleSheet("color: #FFCC00; font-family: 'Consolas', monospace; font-size: 11px;")
+        self.lbl_status.setText(f"DURUM: [İŞLENİYOR] // Simülasyon {dur:.0f}s boyunca 3 modda koşturuluyor...")
+        self.lbl_status.setStyleSheet("color: #F59E0B; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
 
         self.worker = BenchmarkWorker(duration=dur, seed=42)
         self.worker.finished_benchmark.connect(self._on_benchmark_finished)
@@ -335,8 +334,8 @@ class BenchmarkView(QWidget):
         """Updates table and graphs with newly computed benchmark data."""
         self.btn_run.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.lbl_status.setText("DURUM: Kıyaslama başarıyla tamamlandı. Grafikler ve tablo güncellendi.")
-        self.lbl_status.setStyleSheet("color: #00FF66; font-family: 'Consolas', monospace; font-size: 11px;")
+        self.lbl_status.setText("DURUM: [TAMAMLANDI] // Analitik kıyaslama tablosu ve grafikler güncellendi.")
+        self.lbl_status.setStyleSheet("color: #10B981; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
 
         ma = results["mode_a"]
         mb = results["mode_b"]
@@ -351,20 +350,18 @@ class BenchmarkView(QWidget):
             ("Toplam 3B Konum RMSE (m)", f"{ma['total_pos_rmse']:.3f} m", f"{mb['total_pos_rmse']:.3f} m", f"{mc['total_pos_rmse']:.3f} m"),
             ("Kalıcı Durum 3B Hız RMSE (m/s)", f"{ma['ss_vel_rmse']:.3f} m/s", f"{mb['ss_vel_rmse']:.3f} m/s", f"{mc['ss_vel_rmse']:.3f} m/s"),
             ("Toplam 3B Hız RMSE (m/s)", f"{ma['total_vel_rmse']:.3f} m/s", f"{mb['total_vel_rmse']:.3f} m/s", f"{mc['total_vel_rmse']:.3f} m/s"),
-            ("İşlenen OOSM Sayısı", "0 (Gecikmesiz)", "0 (Yönetilemez)", f"{results['oosm_count']} Olay"),
+            ("İşlenen OOSM Sayısı", "0 [GECİKMESİZ]", "0 [TELAFİSİZ]", f"{results['oosm_count']} OLAY"),
             ("Atılan (Dropped) OOSM", "0", "0", f"{results['dropped_oosm_count']}"),
-            ("Mod B (Naive)'ye Göre İyileşme", "-", "Referans", f"%{imp_pos:.1f} İYİLEŞME"),
+            ("Mod B (Naive)'ye Göre İyileşme", "-", "REFERANS", f"%{imp_pos:.1f} İYİLEŞME"),
         ]
         self._set_table_rows(rows)
 
-        # Update Live 3D Position Error Graphs
         if "p_err" in mb and "p_err" in mc and "p_err" in ma:
             self.curve_b_pos.setData(mb["t_arr"], mb["p_err"])
             self.curve_c_pos.setData(mc["t_arr"], mc["p_err"])
             self.curve_a_pos.setData(ma["t_arr"], ma["p_err"])
             self.plot_pos_err.enableAutoRange()
 
-        # Update Live 3D Velocity Error Graphs
         if "v_err" in mb and "v_err" in mc and "v_err" in ma:
             self.curve_b_vel.setData(mb["t_arr"], mb["v_err"])
             self.curve_c_vel.setData(mc["t_arr"], mc["v_err"])

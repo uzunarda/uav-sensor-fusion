@@ -1,7 +1,8 @@
 """
 2D Tactical Radar Display (PPI Scope) for UAV Multi-Sensor Fusion.
-Renders Ownship UAV, radar range rings, camera FOV cone, ground truth track,
-EKF fusion estimate, 2D error covariance uncertainty ellipse, and raw observations.
+Renders Ownship UAV, radar range rings, azimuth bearing spokes, camera FOV cone,
+ground truth track, EKF fusion estimate, 2D error covariance uncertainty ellipse,
+and raw synthetic sensor observations.
 """
 
 from __future__ import annotations
@@ -9,8 +10,8 @@ from typing import Optional, List
 import numpy as np
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPen, QColor, QFont
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame
 
 import pyqtgraph as pg
 
@@ -28,77 +29,110 @@ class TacticalRadarDisplay(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(0)
 
-        # Header Title
-        self.title_label = QLabel("2B TAKTİK RADAR (PPI SCOPE) - DOĞU-KUZEY DÜZLEMİ")
-        self.title_label.setStyleSheet("""
-            QLabel {
-                color: #00FF66;
-                font-family: 'Consolas', 'Courier New', monospace;
-                font-size: 11px;
-                font-weight: bold;
-                letter-spacing: 1px;
-                background-color: #0D1612;
-                padding: 4px 8px;
-                border-bottom: 1px solid #1A3324;
+        # Tactical MFD Header Bar
+        header = QFrame()
+        header.setFixedHeight(26)
+        header.setStyleSheet("""
+            QFrame {
+                background-color: #0C131B;
+                border-top: 1px solid #1C2C3B;
+                border-bottom: 1px solid #1C2C3B;
+                border-left: 3px solid #10B981;
             }
         """)
-        layout.addWidget(self.title_label)
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(8, 0, 8, 0)
+        h_layout.setSpacing(8)
+
+        self.title_label = QLabel("[MOD-01A] 2B TAKTİK RADAR (PPI SCOPE // DOĞU-KUZEY DÜZLEMİ)")
+        self.title_label.setStyleSheet("""
+            color: #10B981;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 10px;
+            font-weight: bold;
+            letter-spacing: 0.8px;
+            background: transparent;
+            border: none;
+        """)
+        h_layout.addWidget(self.title_label)
+        h_layout.addStretch(1)
+
+        legend_label = QLabel("[- -] GERÇEK (GT)   [───] EKF FÜZYON   [ O ] 2σ KOVARYANS   [ x ] HAM ÖLÇÜM")
+        legend_label.setStyleSheet("""
+            color: #7FA0B8;
+            font-family: 'Consolas', monospace;
+            font-size: 9px;
+            font-weight: bold;
+            background: transparent;
+            border: none;
+        """)
+        h_layout.addWidget(legend_label)
+        layout.addWidget(header)
 
         # PyQtGraph PlotWidget
         self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setBackground("#050A07")  # Deep tactical radar black-green
+        self.plot_widget.setBackground("#05080C")
         self.plot_widget.setAspectLocked(True)
-        self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
-        self.plot_widget.getAxis("bottom").setLabel("Doğu (East - Y)", units="m", color="#5C8A6F")
-        self.plot_widget.getAxis("left").setLabel("Kuzey (North - X)", units="m", color="#5C8A6F")
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.12)
+        self.plot_widget.getAxis("bottom").setLabel("DOĞU EKSENİ (EAST / +Y)", units="m", color="#68899E")
+        self.plot_widget.getAxis("left").setLabel("KUZEY EKSENİ (NORTH / +X)", units="m", color="#68899E")
 
         # Range bounds
-        self.plot_widget.setXRange(-1600, 400)
-        self.plot_widget.setYRange(-200, 1800)
+        self.plot_widget.setXRange(-1600, 450)
+        self.plot_widget.setYRange(-250, 1850)
 
-        layout.addWidget(self.plot_widget)
+        layout.addWidget(self.plot_widget, stretch=1)
 
-        # Create static radar elements (rings, crosshairs)
+        # Create static radar elements (rings, azimuth spokes, crosshairs)
         self._init_radar_grid()
 
         # Dynamic plot items
         self._init_dynamic_layers()
 
     def _init_radar_grid(self) -> None:
-        """Draws concentric range rings (500m, 1000m, 1500m) and crosshairs centered at UAV."""
-        ring_pen = pg.mkPen(color=QColor(0, 100, 45, 120), width=1, style=Qt.PenStyle.DashLine)
+        """Draws concentric range rings (500m, 1000m, 1500m, 2000m) and azimuth spokes centered at UAV."""
+        ring_pen = pg.mkPen(color=QColor(16, 185, 129, 75), width=1, style=Qt.PenStyle.DashLine)
+        spoke_pen = pg.mkPen(color=QColor(16, 185, 129, 38), width=1, style=Qt.PenStyle.DotLine)
 
-        phi = np.linspace(0, 2 * np.pi, 120)
-        for r in [500.0, 1000.0, 1500.0]:
+        phi = np.linspace(0, 2 * np.pi, 160)
+        for r in [500.0, 1000.0, 1500.0, 2000.0]:
             x_ring = r * np.sin(phi)  # East
             y_ring = r * np.cos(phi)  # North
             ring_item = pg.PlotCurveItem(x_ring, y_ring, pen=ring_pen)
             self.plot_widget.addItem(ring_item)
 
-            # Label for ring
-            label = pg.TextItem(f"{int(r)}m", color=QColor(0, 180, 80, 160), anchor=(0.5, 1.2))
+            # Technical Range Ring Label
+            label = pg.TextItem(f"RNG {int(r)}m", color=QColor(52, 211, 153, 145), anchor=(0.5, 1.15))
             label.setFont(QFont("Consolas", 8))
             label.setPos(0.0, r)
             self.plot_widget.addItem(label)
 
-        # Crosshairs through origin (UAV)
-        axis_pen = pg.mkPen(color=QColor(0, 80, 35, 90), width=1)
-        self.plot_widget.addItem(pg.PlotCurveItem([-1800, 1800], [0, 0], pen=axis_pen))
-        self.plot_widget.addItem(pg.PlotCurveItem([0, 0], [-1800, 1800], pen=axis_pen))
+        # Azimuth Bearing Spokes every 45 degrees
+        max_r = 2000.0
+        for deg in [45, 135, 225, 315]:
+            rad = np.radians(deg)
+            x_end = max_r * np.sin(rad)
+            y_end = max_r * np.cos(rad)
+            self.plot_widget.addItem(pg.PlotCurveItem([0.0, x_end], [0.0, y_end], pen=spoke_pen))
+
+        # Primary Cardinal Crosshairs through origin (UAV)
+        axis_pen = pg.mkPen(color=QColor(16, 185, 129, 95), width=1)
+        self.plot_widget.addItem(pg.PlotCurveItem([-2000, 2000], [0, 0], pen=axis_pen))
+        self.plot_widget.addItem(pg.PlotCurveItem([0, 0], [-2000, 2000], pen=axis_pen))
 
         # Ownship UAV Marker at (0, 0)
         self.ownship_marker = pg.ScatterPlotItem(
             [0.0], [0.0],
-            symbol="t1",  # Upward pointing triangle
-            size=14,
-            pen=pg.mkPen("#00FFFF", width=1.5),
-            brush=pg.mkBrush("#008888"),
+            symbol="t1",
+            size=13,
+            pen=pg.mkPen("#00B4D8", width=1.6),
+            brush=pg.mkBrush(0, 180, 216, 140),
         )
         self.plot_widget.addItem(self.ownship_marker)
 
-        uav_label = pg.TextItem("OWNSHIP (İHA)", color=QColor(0, 255, 255, 200), anchor=(0.5, -0.6))
+        uav_label = pg.TextItem("OWNSHIP [İHA-01]", color=QColor(56, 189, 248, 210), anchor=(0.5, -0.5))
         uav_label.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
         uav_label.setPos(0.0, 0.0)
         self.plot_widget.addItem(uav_label)
@@ -107,55 +141,55 @@ class TacticalRadarDisplay(QWidget):
         """Initializes dynamic data curves and scatter layers."""
         # 1. Camera FOV Cone
         self.fov_cone_item = pg.PlotCurveItem(
-            pen=pg.mkPen(color=QColor(0, 255, 128, 70), width=1, style=Qt.PenStyle.DotLine),
-            brush=pg.mkBrush(0, 255, 128, 18),
+            pen=pg.mkPen(color=QColor(16, 185, 129, 75), width=1, style=Qt.PenStyle.DotLine),
+            brush=pg.mkBrush(16, 185, 129, 14),
             fillLevel=0,
         )
         self.plot_widget.addItem(self.fov_cone_item)
 
-        # 2. Raw Measurements (Red Scatter Points)
+        # 2. Raw Synthetic Measurements (Amber/Red Crosshair Scatter Points)
         self.raw_scatter = pg.ScatterPlotItem(
             size=7,
-            pen=pg.mkPen(color=QColor(255, 50, 50, 200), width=0.8),
-            brush=pg.mkBrush(255, 60, 60, 140),
+            pen=pg.mkPen(color=QColor(239, 68, 68, 210), width=1.0),
+            brush=pg.mkBrush(239, 68, 68, 140),
             symbol="x",
         )
         self.plot_widget.addItem(self.raw_scatter)
 
-        # 3. Ground Truth Track (Blue Dashed Line)
+        # 3. Ground Truth Track (Cyan Dashed Line)
         self.gt_track_item = pg.PlotCurveItem(
-            pen=pg.mkPen(color="#00A2FF", width=1.8, style=Qt.PenStyle.DashLine),
+            pen=pg.mkPen(color="#38BDF8", width=1.8, style=Qt.PenStyle.DashLine),
         )
         self.plot_widget.addItem(self.gt_track_item)
 
-        # 4. EKF Fusion Track (Green Solid Line)
+        # 4. EKF Fusion Track (Phosphor Green Solid Line)
         self.ekf_track_item = pg.PlotCurveItem(
-            pen=pg.mkPen(color="#00FF66", width=2.2),
+            pen=pg.mkPen(color="#10B981", width=2.2),
         )
         self.plot_widget.addItem(self.ekf_track_item)
 
         # 5. 2D Covariance Uncertainty Ellipse (Amber Solid Line)
         self.cov_ellipse_item = pg.PlotCurveItem(
-            pen=pg.mkPen(color="#FFB300", width=1.8),
-            brush=pg.mkBrush(255, 179, 0, 35),
+            pen=pg.mkPen(color="#F59E0B", width=1.6),
+            brush=pg.mkBrush(245, 158, 11, 30),
             fillLevel=None,
         )
         self.plot_widget.addItem(self.cov_ellipse_item)
 
         # 6. Current Target Head Markers
         self.target_gt_head = pg.ScatterPlotItem(
-            size=10,
+            size=9,
             symbol="o",
-            pen=pg.mkPen("#00A2FF", width=1.5),
-            brush=pg.mkBrush(0, 162, 255, 120),
+            pen=pg.mkPen("#38BDF8", width=1.5),
+            brush=pg.mkBrush(56, 189, 248, 110),
         )
         self.plot_widget.addItem(self.target_gt_head)
 
         self.target_ekf_head = pg.ScatterPlotItem(
             size=12,
             symbol="+",
-            pen=pg.mkPen("#00FF66", width=2.0),
-            brush=pg.mkBrush(0, 255, 102),
+            pen=pg.mkPen("#10B981", width=2.0),
+            brush=pg.mkBrush(16, 185, 129),
         )
         self.plot_widget.addItem(self.target_ekf_head)
 
@@ -185,10 +219,14 @@ class TacticalRadarDisplay(QWidget):
             self.target_ekf_head.setData([east_ekf[-1]], [north_ekf[-1]])
 
             # 3. Update Camera FOV Cone towards target
-            self._update_fov_cone(uav_east=frame.uav_pos[1], uav_north=frame.uav_pos[0],
-                                  tgt_east=east_ekf[-1], tgt_north=north_ekf[-1])
+            self._update_fov_cone(
+                uav_east=frame.uav_pos[1],
+                uav_north=frame.uav_pos[0],
+                tgt_east=east_ekf[-1],
+                tgt_north=north_ekf[-1],
+            )
 
-        # 4. Update Raw Measurements
+        # 4. Update Raw Synthetic Measurements
         if raw_tail:
             raw_east = [p[1] for p in raw_tail]
             raw_north = [p[0] for p in raw_tail]
@@ -217,7 +255,6 @@ class TacticalRadarDisplay(QWidget):
         phi_left = bearing - half_angle
         phi_right = bearing + half_angle
 
-        # Triangle vertices: UAV -> Left Cone Edge -> Right Cone Edge -> UAV
         x_cone = [uav_east, uav_east + cone_range * np.sin(phi_left), uav_east + cone_range * np.sin(phi_right), uav_east]
         y_cone = [uav_north, uav_north + cone_range * np.cos(phi_left), uav_north + cone_range * np.cos(phi_right), uav_north]
 
@@ -230,7 +267,6 @@ class TacticalRadarDisplay(QWidget):
         Calculates and draws 2D covariance ellipse on East-North plane.
         cov_2d: [ [Pxx, Pxy], [Pyx, Pyy] ] where x=North, y=East.
         """
-        # Reorder cov matrix to [East, North] for plotting: [[Pyy, Pyx], [Pxy, Pxx]]
         cov_en = np.array([
             [cov_2d[1, 1], cov_2d[1, 0]],
             [cov_2d[0, 1], cov_2d[0, 0]],
@@ -239,12 +275,10 @@ class TacticalRadarDisplay(QWidget):
         vals, vecs = np.linalg.eigh(cov_en)
         vals = np.maximum(vals, 1e-6)
 
-        # Semi-major and semi-minor axes
         r_major = n_sigma * np.sqrt(vals[1])
         r_minor = n_sigma * np.sqrt(vals[0])
         angle = np.arctan2(vecs[1, 1], vecs[0, 1])
 
-        # Generate ellipse boundary points
         phi = np.linspace(0, 2 * np.pi, 60)
         e_pts = r_major * np.cos(phi) * np.cos(angle) - r_minor * np.sin(phi) * np.sin(angle) + center_east
         n_pts = r_major * np.cos(phi) * np.sin(angle) + r_minor * np.sin(phi) * np.cos(angle) + center_north

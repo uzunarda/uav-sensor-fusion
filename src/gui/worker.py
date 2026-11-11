@@ -2,25 +2,40 @@
 Simulation Engine and Background Worker for UAV Multi-Sensor EKF Tactical GUI.
 Supports Real-Time playback, multi-speed multipliers (0.5x, 1x, 2x, Max),
 dynamic Mode switching (Mode A: Ideal, Mode B: Naive, Mode C: Rollback/Replay),
-and instantaneous timeline scrubbing (seeking).
+configurable sensor latency/noise parameters, and instantaneous timeline scrubbing.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Optional, List, Dict
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Tuple
 import numpy as np
 
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
 from src.dynamics import TargetState, ConstantVelocityTrajectory
-from src.sensors import RadarSensor, CameraSensor, reconstruct_pseudo_cartesian, SensorMeasurement
+from src.sensors import RadarSensor, CameraSensor, reconstruct_pseudo_cartesian
 from src.simulator import AsyncSensorEventSimulator
 from src.ekf import ExtendedKalmanFilter
 
 
 @dataclass
+class SyntheticPacketRecord:
+    """Single synthetic sensor packet record for the live Data Link Inspector."""
+    seq_id: int
+    sensor_type: str       # "RADAR" or "CAMERA"
+    t_capture: float       # True capture epoch (with sensor clock bias)
+    t_receive: float       # Processor arrival epoch
+    latency_ms: float      # Total arrival delay (t_receive - t_capture) * 1000
+    raw_meas_str: str      # Formatted noisy synthetic measurement z_k
+    true_meas_str: str     # Formatted ground-truth reference h(x_true)
+    noise_delta_str: str   # Formatted synthetic noise / residual delta
+    status: str            # "IN-SEQ", "OOSM-ROLLBACK", or "NAIVE-DELAY"
+    is_oosm: bool = False
+
+
+@dataclass
 class SimulationFrame:
-    """Telemetry and display state for a single simulation time slice."""
+    """Telemetry, synthetic sensor link, and display state for a single simulation time slice."""
     timestamp: float
     sim_mode: str  # "MODE_A", "MODE_B", "MODE_C"
     target_gt_pos: np.ndarray  # [x, y, z] NED
@@ -38,6 +53,16 @@ class SimulationFrame:
     range_to_target: float
     altitude: float            # Height above ground (-z in NED)
     progress_pct: float        # 0.0 to 100.0
+    # Synthetic Sensor Inspector fields
+    packet_seq_id: int = 0
+    t_capture: float = 0.0
+    t_receive: float = 0.0
+    latency_ms: float = 0.0
+    latest_radar_meas: Optional[float] = None
+    latest_radar_gt: Optional[float] = None
+    latest_cam_meas: Optional[Tuple[float, float]] = None  # (psi_deg, lambda_deg)
+    latest_cam_gt: Optional[Tuple[float, float]] = None    # (psi_gt_deg, lambda_gt_deg)
+    recent_packets: List[SyntheticPacketRecord] = field(default_factory=list)
 
 
 class SimulationWorker(QObject):
@@ -45,7 +70,7 @@ class SimulationWorker(QObject):
     Simulation Controller and State Generator for the Tactical GUI.
 
     Emits:
-        frame_ready(SimulationFrame, list[tuple], list[tuple]): Emitted at ~60 FPS with current frame and track histories.
+        frame_ready(SimulationFrame, np.ndarray, np.ndarray, list): Emitted at ~60 FPS with current frame and track histories.
         playback_state_changed(bool): Emitted with is_playing.
         mode_changed(str): Emitted when active mode is switched.
         simulation_finished(): Emitted when timeline reaches the end.
@@ -65,7 +90,7 @@ class SimulationWorker(QObject):
         self.sim_duration = float(sim_duration)
         self.seed = int(seed)
 
-        # Simulation parameters
+        # Simulation platform & target parameters
         self.uav_pos = np.array([0.0, 0.0, -150.0], dtype=np.float64)  # 150m altitude
         self.true_initial_state = TargetState(
             x=1200.0,
@@ -82,7 +107,21 @@ class SimulationWorker(QObject):
             150.0**2, 20.0**2,
             100.0**2, 15.0**2,
         ])
-        self.q_continuous = 0.8
+
+        # Configurable Sensor & EKF Parameters
+        self.radar_freq_hz: float = 10.0
+        self.radar_sigma_m: float = 6.0
+        self.radar_latency_s: float = 0.008
+        self.radar_jitter_s: float = 0.002
+
+        self.cam_freq_hz: float = 30.0
+        self.cam_sigma_rad: float = 0.004
+        self.cam_latency_s: float = 0.040
+        self.cam_jitter_s: float = 0.005
+        self.cam_clock_bias_s: float = 0.025
+
+        self.q_continuous: float = 0.8
+        self.max_buffer_size: int = 150
 
         # Active state
         self.current_mode = "MODE_C"
@@ -111,23 +150,68 @@ class SimulationWorker(QObject):
             self._compute_mode_data(mode)
 
     def _compute_mode_data(self, mode: str) -> None:
-        """Runs the EKF engine for a specific mode and saves timeline frames."""
+        """Runs the EKF engine for a specific mode and saves timeline frames and synthetic packets."""
         rng = np.random.default_rng(self.seed)
         trajectory = ConstantVelocityTrajectory(self.true_initial_state, t0=0.0)
 
         if mode == "MODE_A":
-            radar = RadarSensor(10.0, 6.0, latency_mean=0.0, latency_jitter_std=0.0, clock_bias=0.0, rng=rng)
-            camera = CameraSensor(30.0, 0.004, 0.004, latency_mean=0.0, latency_jitter_std=0.0, clock_bias=0.0, rng=rng)
+            radar = RadarSensor(
+                self.radar_freq_hz,
+                self.radar_sigma_m,
+                latency_mean=0.0,
+                latency_jitter_std=0.0,
+                clock_bias=0.0,
+                rng=rng,
+            )
+            camera = CameraSensor(
+                self.cam_freq_hz,
+                self.cam_sigma_rad,
+                self.cam_sigma_rad,
+                latency_mean=0.0,
+                latency_jitter_std=0.0,
+                clock_bias=0.0,
+                rng=rng,
+            )
             is_naive = False
             enable_oosm = False
         elif mode == "MODE_B":
-            radar = RadarSensor(10.0, 6.0, latency_mean=0.008, latency_jitter_std=0.002, clock_bias=0.0, rng=rng)
-            camera = CameraSensor(30.0, 0.004, 0.004, latency_mean=0.040, latency_jitter_std=0.005, clock_bias=0.025, rng=rng)
+            radar = RadarSensor(
+                self.radar_freq_hz,
+                self.radar_sigma_m,
+                latency_mean=self.radar_latency_s,
+                latency_jitter_std=self.radar_jitter_s,
+                clock_bias=0.0,
+                rng=rng,
+            )
+            camera = CameraSensor(
+                self.cam_freq_hz,
+                self.cam_sigma_rad,
+                self.cam_sigma_rad,
+                latency_mean=self.cam_latency_s,
+                latency_jitter_std=self.cam_jitter_s,
+                clock_bias=self.cam_clock_bias_s,
+                rng=rng,
+            )
             is_naive = True
             enable_oosm = False
         else:  # MODE_C
-            radar = RadarSensor(10.0, 6.0, latency_mean=0.008, latency_jitter_std=0.002, clock_bias=0.0, rng=rng)
-            camera = CameraSensor(30.0, 0.004, 0.004, latency_mean=0.040, latency_jitter_std=0.005, clock_bias=0.025, rng=rng)
+            radar = RadarSensor(
+                self.radar_freq_hz,
+                self.radar_sigma_m,
+                latency_mean=self.radar_latency_s,
+                latency_jitter_std=self.radar_jitter_s,
+                clock_bias=0.0,
+                rng=rng,
+            )
+            camera = CameraSensor(
+                self.cam_freq_hz,
+                self.cam_sigma_rad,
+                self.cam_sigma_rad,
+                latency_mean=self.cam_latency_s,
+                latency_jitter_std=self.cam_jitter_s,
+                clock_bias=self.cam_clock_bias_s,
+                rng=rng,
+            )
             is_naive = False
             enable_oosm = True
 
@@ -141,24 +225,64 @@ class SimulationWorker(QObject):
             initial_covariance=self.P_init.copy(),
             process_noise_spectral_density=self.q_continuous,
             enable_oosm_buffer=enable_oosm,
-            max_buffer_size=150,
+            max_buffer_size=self.max_buffer_size,
         )
 
         frames: List[SimulationFrame] = []
         gt_track_list = []
         ekf_track_list = []
         raw_points_list = []
+        rolling_packets: List[SyntheticPacketRecord] = []
 
         latest_radar_range: Optional[float] = None
-        latest_cam_angles: Optional[tuple[float, float]] = None
+        latest_radar_gt: Optional[float] = None
+        latest_cam_angles: Optional[Tuple[float, float]] = None
+        latest_cam_deg: Optional[Tuple[float, float]] = None
+        latest_cam_gt_deg: Optional[Tuple[float, float]] = None
 
         prev_oosm_count = 0
+        seq_counter = 0
 
         for event in sim:
+            seq_counter += 1
+
+            # Evaluate ground truth at physical capture time (removing clock bias for camera if needed)
+            bias_offset = self.cam_clock_bias_s if (event.sensor_type == "CAMERA" and mode != "MODE_A") else 0.0
+            t_phys = max(0.0, event.t_capture - bias_offset)
+            gt_at_cap = trajectory.get_state(t_phys)
+            rel_cap = gt_at_cap.position - self.uav_pos
+            true_r_cap = float(np.linalg.norm(rel_cap))
+
             if event.sensor_type == "RADAR":
-                latest_radar_range = float(event.z[0])
-            elif event.sensor_type == "CAMERA":
-                latest_cam_angles = (float(event.z[0]), float(event.z[1]))
+                meas_r = float(event.z[0])
+                latest_radar_range = meas_r
+                latest_radar_gt = true_r_cap
+                err_r = meas_r - true_r_cap
+                raw_str = f"R = {meas_r:7.2f} m"
+                true_str = f"R_gt = {true_r_cap:7.2f} m"
+                delta_str = f"dR = {err_r:+5.2f} m"
+            else:
+                meas_psi = float(event.z[0])
+                meas_lam = float(event.z[1])
+                latest_cam_angles = (meas_psi, meas_lam)
+
+                true_psi = float(np.arctan2(rel_cap[1], rel_cap[0]))
+                true_lam = float(np.arcsin(np.clip(rel_cap[2] / max(true_r_cap, 1e-6), -1.0, 1.0)))
+
+                m_psi_deg = float(np.degrees(meas_psi))
+                m_lam_deg = float(np.degrees(meas_lam))
+                t_psi_deg = float(np.degrees(true_psi))
+                t_lam_deg = float(np.degrees(true_lam))
+
+                latest_cam_deg = (m_psi_deg, m_lam_deg)
+                latest_cam_gt_deg = (t_psi_deg, t_lam_deg)
+
+                d_psi_deg = m_psi_deg - t_psi_deg
+                d_lam_deg = m_lam_deg - t_lam_deg
+
+                raw_str = f"AZ:{m_psi_deg:+6.2f}° EL:{m_lam_deg:+6.2f}°"
+                true_str = f"AZ:{t_psi_deg:+6.2f}° EL:{t_lam_deg:+6.2f}°"
+                delta_str = f"dAZ:{d_psi_deg:+5.2f}° dEL:{d_lam_deg:+5.2f}°"
 
             raw_pos: Optional[np.ndarray] = None
             if latest_radar_range is not None and latest_cam_angles is not None:
@@ -186,7 +310,6 @@ class SimulationWorker(QObject):
             ekf_vel = est_state[[1, 3, 5]]
 
             # 2D horizontal covariance for ellipse: rows/cols for x (North) and y (East)
-            # Covariance matrix P order: 0:x, 1:vx, 2:y, 3:vy, 4:z, 5:vz
             cov_2d = ekf.P[[0, 2], :][:, [0, 2]].copy()
 
             err_pos = float(np.linalg.norm(ekf_pos - target_gt_pos))
@@ -196,6 +319,29 @@ class SimulationWorker(QObject):
 
             is_oosm_now = is_oosm_event or (ekf.oosm_count > prev_oosm_count)
             prev_oosm_count = ekf.oosm_count
+
+            latency_ms = max(0.0, (event.t_receive - t_phys) * 1000.0)
+            if is_oosm_now:
+                pkt_status = "OOSM-ROLLBACK"
+            elif mode == "MODE_B" and latency_ms > 1.0:
+                pkt_status = "NAIVE-DELAY"
+            else:
+                pkt_status = "IN-SEQ"
+
+            pkt_record = SyntheticPacketRecord(
+                seq_id=seq_counter,
+                sensor_type=event.sensor_type,
+                t_capture=event.t_capture,
+                t_receive=event.t_receive,
+                latency_ms=latency_ms,
+                raw_meas_str=raw_str,
+                true_meas_str=true_str,
+                noise_delta_str=delta_str,
+                status=pkt_status,
+                is_oosm=is_oosm_now,
+            )
+            rolling_packets.append(pkt_record)
+            recent_slice = list(rolling_packets[-25:])
 
             frame = SimulationFrame(
                 timestamp=t_eval,
@@ -215,6 +361,15 @@ class SimulationWorker(QObject):
                 range_to_target=range_to_target,
                 altitude=altitude,
                 progress_pct=(t_eval / self.sim_duration) * 100.0,
+                packet_seq_id=seq_counter,
+                t_capture=event.t_capture,
+                t_receive=event.t_receive,
+                latency_ms=latency_ms,
+                latest_radar_meas=latest_radar_range,
+                latest_radar_gt=latest_radar_gt,
+                latest_cam_meas=latest_cam_deg,
+                latest_cam_gt=latest_cam_gt_deg,
+                recent_packets=recent_slice,
             )
             frames.append(frame)
             gt_track_list.append(target_gt_pos)
@@ -285,7 +440,7 @@ class SimulationWorker(QObject):
         if self.speed_multiplier > 0.0:
             sim_dt = dt_real * self.speed_multiplier
         else:
-            # Real-Time OFF: advance very rapidly (e.g. 5x per tick)
+            # Real-Time OFF: advance very rapidly (e.g. 8x per tick)
             sim_dt = dt_real * 8.0
 
         self.current_time += sim_dt
@@ -316,7 +471,7 @@ class SimulationWorker(QObject):
         gt_history = self._mode_gt_tracks[self.current_mode][: idx + 1]
         ekf_history = self._mode_ekf_tracks[self.current_mode][: idx + 1]
 
-        # Raw points up to current time (last 30 points for clarity)
+        # Raw points up to current time (last 40 points for clarity)
         raw_all = self._mode_raw_points[self.current_mode]
         raw_filtered = [p[1] for p in raw_all if p[0] <= self.current_time]
         raw_tail = raw_filtered[-40:] if len(raw_filtered) > 40 else raw_filtered

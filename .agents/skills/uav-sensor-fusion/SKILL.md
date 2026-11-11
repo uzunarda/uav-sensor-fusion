@@ -45,3 +45,4 @@ python -m src.gui.app
 - Synthetic Sensors: [sensors.py](../../../src/sensors.py)
 - Event Queue Simulator: [simulator.py](../../../src/simulator.py)
 - Tactical Radar GUI: [app.py](../../../src/gui/app.py)
+- Live Synthetic Sensor Stream Inspector: [sensor_stream_panel.py](../../../src/gui/widgets/sensor_stream_panel.py)

@@ -79,14 +79,16 @@ python -m src.gui.app
 
 ### Mimari Detaylar:
 - **`SimulationWorker` (`src/gui/worker.py`):**
-  - Başlangıçta simülasyonu 3 mod için de (Mod A, Mod B, Mod C) önceden çözer (`SimulationFrame` nesneleri).
+  - Başlangıçta simülasyonu 3 mod için de (Mod A, Mod B, Mod C) önceden çözer (`SimulationFrame` ve `SyntheticPacketRecord` nesneleri).
+  - Her sensör ölçümü için yakalama zamanı ($t_{capture}$), varış zamanı ($t_{receive}$), gecikme ($\Delta\tau$ ms), gürültülü ham ölçüm ($z_k$), gürültüsüz gerçek referans ($h(\mathbf{x}_{true})$) ve sıra durumu (`IN-SEQ`, `OOSM-ROLLBACK`, `NAIVE-DELAY`) kaydedilir.
   - 60 FPS QTimer (`16 ms`) ile zaman çizelgesini ilerletir.
   - Mod değiştirildiğinde simülasyon sıfırlanmaz, mevcut $t$ anından yeni modun önbelleğine kesintisiz geçer.
-- **Bileşen Hiyerarşisi (`src/gui/widgets/`):**
-  - `radar_display.py`: `pg.PlotWidget` üzerinde PPI Scope, menzil halkaları ($500\text{ m}, 1000\text{ m}, 1500\text{ m}$), dinamik kamera FOV konisi ve 2D kovaryans elipsi ($P_{xx}, P_{yy}, P_{xy}$).
-  - `gl_display.py`: `GLViewWidget` ile 3B yörünge, zemin ızgarası ve İHA-Hedef LOS (görüş hattı) çizgisi.
-  - `telemetry_panel.py`: HUD metrikleri ve 150 ms OOSM ikaz flaşı.
-  - `control_bar.py`: Oynat/Durdur/Sıfırla, Hız çarpanı, Mod seçici radio butonlar, Zaman kaydırıcı.
+- **2x2 MFD Bileşen Hiyerarşisi (`src/gui/widgets/`):**
+  - `radar_display.py` (`[MOD-01A]`): `pg.PlotWidget` üzerinde PPI Scope, menzil halkaları ($500\text{ m} - 2000\text{ m}$), 45° azimut kerteriz çizgileri, dinamik kamera FOV konisi ve 2D kovaryans elipsi ($P_{xx}, P_{yy}, P_{xy}$).
+  - `gl_display.py` (`[MOD-01B]`): `GLViewWidget` ile 3B yörünge, zemin ızgarası, koordinat eksenleri ve İHA-Hedef LOS (görüş hattı) çizgisi.
+  - `sensor_stream_panel.py` (`[MOD-01C]`): Üretilen sentetik `RADAR` ve `EO/IR` paketlerinin canlı akan tablosu (`PKT#`, `T_CAP`, `T_RX`, `GECİKME`, `HAM ÖLÇÜM`, `GÜRÜLTÜ/DURUM`) ve anlık **Gerçek Hedef (GT) vs. Sentetik Ham Ölçüm vs. EKF Füzyon** sayısal kıyaslama matrisi.
+  - `telemetry_panel.py` (`[MOD-01D]`): Keskin köşeli taktik telemetri hücreleri ve 180 ms OOSM Rollback ikaz şeridi.
+  - `control_bar.py`: Oynat/Durdur/Sıfırla, Hız çarpanı, Mod seçici radio butonlar ve Zaman ekseni kaydırıcısı.
 
 ---
 

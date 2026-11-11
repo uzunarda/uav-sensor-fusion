@@ -1,5 +1,6 @@
 """
-Tab 1: Live Tactical Radar View (PPI Scope, 3D Spatial Trajectory, HUD Telemetry & Playback Bar).
+Tab 1: Live Tactical Radar View (2x2 MFD Layout: PPI Scope, 3D Spatial Trajectory,
+Live Synthetic Sensor Data Stream Inspector, HUD Telemetry & Playback Bar).
 """
 
 from __future__ import annotations
@@ -16,12 +17,13 @@ from src.gui.worker import SimulationWorker, SimulationFrame
 from src.gui.widgets.radar_display import TacticalRadarDisplay
 from src.gui.widgets.gl_display import Trajectory3DDisplay
 from src.gui.widgets.telemetry_panel import TelemetryPanel
+from src.gui.widgets.sensor_stream_panel import SensorDataStreamPanel
 from src.gui.widgets.control_bar import PlaybackControlBar
 
 
 class LiveRadarView(QWidget):
     """
-    Live Radar & Multi-Sensor Fusion Console View.
+    Live Radar & Multi-Sensor Fusion MFD Console View.
     """
 
     def __init__(self, worker: SimulationWorker, parent: Optional[QWidget] = None) -> None:
@@ -30,43 +32,58 @@ class LiveRadarView(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
 
-        # Main Horizontal Splitter: Left (2D PPI Radar) vs Right (3D Trajectory & Telemetry)
+        # Main Horizontal Splitter: Left MFD Column vs Right MFD Column
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_splitter.setHandleWidth(5)
+        main_splitter.setHandleWidth(4)
 
-        # 2D Radar Display
+        # Left Column Vertical Splitter: Top (2D PPI Radar) / Bottom (Synthetic Sensor Data Stream)
+        left_splitter = QSplitter(Qt.Orientation.Vertical)
+        left_splitter.setHandleWidth(4)
+
         self.radar_display = TacticalRadarDisplay(self)
-        main_splitter.addWidget(self.radar_display)
+        self.sensor_stream_panel = SensorDataStreamPanel(self)
 
-        # Right Section: Vertical Splitter
+        self.radar_display.setMinimumHeight(320)
+        self.sensor_stream_panel.setMinimumHeight(230)
+
+        left_splitter.addWidget(self.radar_display)
+        left_splitter.addWidget(self.sensor_stream_panel)
+        left_splitter.setStretchFactor(0, 6)
+        left_splitter.setStretchFactor(1, 4)
+        left_splitter.setSizes([470, 310])
+
+        main_splitter.addWidget(left_splitter)
+
+        # Right Column Vertical Splitter: Top (3D Trajectory) / Bottom (HUD Telemetry)
         right_splitter = QSplitter(Qt.Orientation.Vertical)
-        right_splitter.setHandleWidth(5)
+        right_splitter.setHandleWidth(4)
 
         self.gl_display = Trajectory3DDisplay(self)
         self.telemetry_panel = TelemetryPanel(self)
 
-        # Minimum dimensions to prevent cramped layout
-        self.gl_display.setMinimumWidth(500)
-        self.telemetry_panel.setMinimumWidth(500)
-        self.telemetry_panel.setMinimumHeight(270)
+        self.gl_display.setMinimumWidth(480)
+        self.gl_display.setMinimumHeight(320)
+        self.telemetry_panel.setMinimumWidth(480)
+        self.telemetry_panel.setMinimumHeight(230)
 
         right_splitter.addWidget(self.gl_display)
         right_splitter.addWidget(self.telemetry_panel)
-        right_splitter.setStretchFactor(0, 5)
+        right_splitter.setStretchFactor(0, 6)
         right_splitter.setStretchFactor(1, 4)
-        right_splitter.setSizes([460, 360])
+        right_splitter.setSizes([470, 310])
 
         main_splitter.addWidget(right_splitter)
-        # Balanced 52% / 48% split ensuring the right side is spacious and clear
-        main_splitter.setStretchFactor(0, 5)
-        main_splitter.setStretchFactor(1, 5)
-        main_splitter.setSizes([800, 720])
+
+        # Balanced 52% / 48% split across Left and Right MFD columns
+        main_splitter.setStretchFactor(0, 52)
+        main_splitter.setStretchFactor(1, 48)
+        main_splitter.setSizes([720, 660])
 
         layout.addWidget(main_splitter, stretch=1)
 
-        # Bottom Section: Playback Bar
+        # Bottom Section: Playback & Mode Control Bar
         self.control_bar = PlaybackControlBar(sim_duration=worker.sim_duration, parent=self)
         layout.addWidget(self.control_bar, stretch=0)
 
@@ -89,8 +106,9 @@ class LiveRadarView(QWidget):
         ekf_history: object,
         raw_tail: object,
     ) -> None:
-        """Dispatches simulation frame to all live displays."""
+        """Dispatches simulation frame to all 4 MFD quadrants and control bar."""
         self.radar_display.update_frame(frame, gt_history, ekf_history, raw_tail)
         self.gl_display.update_frame(frame, gt_history, ekf_history, raw_tail)
+        self.sensor_stream_panel.update_frame(frame)
         self.telemetry_panel.update_frame(frame)
         self.control_bar.update_frame(frame)

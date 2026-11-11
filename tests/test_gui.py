@@ -39,11 +39,15 @@ class TestTacticalRadarGUI(unittest.TestCase):
         # Check initial widget state
         self.assertIsNotNone(window.view_live_radar.radar_display)
         self.assertIsNotNone(window.view_live_radar.gl_display)
+        self.assertIsNotNone(window.view_live_radar.sensor_stream_panel)
         self.assertIsNotNone(window.view_live_radar.telemetry_panel)
         self.assertIsNotNone(window.view_live_radar.control_bar)
         self.assertIsNotNone(window.view_benchmark)
         self.assertIsNotNone(window.view_tests)
         self.assertIsNotNone(window.view_config)
+
+        # Verify synthetic packet stream is populated on initial frame
+        self.assertGreater(window.view_live_radar.sensor_stream_panel.table.rowCount(), 0)
 
         # Step forward a few ticks
         window.worker.play()

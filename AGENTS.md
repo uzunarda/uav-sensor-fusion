@@ -108,15 +108,16 @@ uav-sensor-fusion/
 │       ├── app.py             # QMainWindow Komuta Merkezi ana uygulaması
 │       ├── worker.py          # 60 FPS Simülasyon iş parçacığı & veri hazırlayıcı
 │       ├── views/             # 4 Ana Sekme Görünümü
-│       │   ├── live_radar_view.py    # Canlı radar & 3B taktik görünüm sekmesi
+│       │   ├── live_radar_view.py    # 2x2 MFD: Canlı radar, 3B görünüm, sentetik veri akışı & telemetri
 │       │   ├── benchmark_view.py     # Mod A/B/C grafik ve metrik kıyaslama sekmesi
 │       │   ├── test_runner_view.py   # Dahili GUI test koşturucu ve log sekmesi
 │       │   └── config_view.py        # Sensör gecikmeleri ve filtre ayarları sekmesi
 │       └── widgets/           # Özel UI bileşenleri
-│           ├── radar_display.py      # 2B PPI Scope radar ekranı (FOV, Covariance Ellipse)
-│           ├── gl_display.py         # 3B OpenGL yörünge ve LOS yaklaşma vektörü
-│           ├── telemetry_panel.py    # Telemetri HUD & Flaş OOSM Rozeti
-│           └── control_bar.py        # Oynatıcı, hız çarpanı, mod seçici ve zaman çubuğu
+│           ├── radar_display.py       # [MOD-01A] 2B PPI Scope radar ekranı (FOV, Covariance Ellipse)
+│           ├── gl_display.py          # [MOD-01B] 3B OpenGL yörünge ve LOS yaklaşma vektörü
+│           ├── sensor_stream_panel.py # [MOD-01C] Canlı sentetik sensör paket akışı ve GT/Ham/EKF kıyaslama
+│           ├── telemetry_panel.py     # [MOD-01D] Telemetri HUD & OOSM durum konsolu
+│           └── control_bar.py         # Oynatıcı, hız çarpanı, mod seçici ve zaman çubuğu
 ├── tests/
 │   ├── test_ekf.py            # Analitik Jacobian ve OOSM matematiksel doğrulama testleri
 │   └── test_gui.py            # GUI başlatma, frame dispatch ve offscreen testleri
@@ -149,6 +150,9 @@ Tüm ajanlar projede değişiklik veya ekleme yaparken aşağıdaki kurallara **
    - Yeni bir algoritma eklendiğinde bu mod mimarisini bozmamalıdır.
 6. **Mevcut Yorum ve Dökümantasyonun Korunması:**
    - Var olan fonksiyon docstring'leri ve matematiksel açıklamalar silinmemeli, geliştirilmelidir.
+7. **Taktik Arayüz ve Tasarım Standartları (GUI):**
+   - Arayüzde kesinlikle emoji kullanılmamalı; `[MOD-01A]`, `[KIN-01]` gibi teknik modül kodları, keskin köşeli (`0px` radius) koyu karbon-arduvaz paneller ve monospaced (`Consolas`) tipografi korunmalıdır.
+   - Kurum veya marka adları (`ASELSAN`, `C4ISR` vb.) arayüz başlıklarında kullanılmamalıdır.
 
 ---
 

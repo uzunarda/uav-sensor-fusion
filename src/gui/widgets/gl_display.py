@@ -40,39 +40,43 @@ class Trajectory3DDisplay(QWidget):
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
 
-        # Single Compact Tactical Header (Title on left, Legend on right)
+        # Single Compact Tactical MFD Header (Title on left, Legend on right)
         header = QFrame()
         header.setFixedHeight(26)
         header.setStyleSheet("""
             QFrame {
-                background-color: #0B141B;
-                border-bottom: 1px solid #162B3A;
+                background-color: #0C131B;
+                border-top: 1px solid #1C2C3B;
+                border-bottom: 1px solid #1C2C3B;
+                border-left: 3px solid #38BDF8;
             }
         """)
         h_layout = QHBoxLayout(header)
         h_layout.setContentsMargins(8, 0, 8, 0)
         h_layout.setSpacing(8)
 
-        title_label = QLabel("3B YÖRÜNGE VE İRTİFA GÖRÜNÜMÜ")
+        title_label = QLabel("[MOD-01B] 3B UZAYSAL YÖRÜNGE VE İRTİFA GÖRÜNÜMÜ (NED // OPENGL)")
         title_label.setStyleSheet("""
-            color: #00CCFF;
+            color: #38BDF8;
             font-family: 'Consolas', 'Courier New', monospace;
-            font-size: 11px;
+            font-size: 10px;
             font-weight: bold;
-            letter-spacing: 1px;
+            letter-spacing: 0.8px;
             background: transparent;
+            border: none;
         """)
         h_layout.addWidget(title_label)
 
         h_layout.addStretch(1)
 
-        legend_label = QLabel("🔴 +Y Kuzey  🔵 +X Doğu  🟢 +Z İrtifa  🟡 İzdüşüm")
+        legend_label = QLabel("[+Y] KUZEY   [+X] DOĞU   [+Z] İRTİFA   [───] LOS / İZDÜŞÜM")
         legend_label.setStyleSheet("""
-            color: #7EADC0;
+            color: #7FA0B8;
             font-family: 'Consolas', monospace;
-            font-size: 10px;
+            font-size: 9px;
             font-weight: bold;
             background: transparent;
+            border: none;
         """)
         h_layout.addWidget(legend_label)
 
