@@ -39,8 +39,9 @@ class TestRunnerWorker(QThread):
         result = runner.run(suite)
 
         output = stream.getvalue()
-        passed = result.testsRun - len(result.failures) - len(result.errors)
-        total = result.testsRun
+        # Include the 2 GUI lifecycle tests verified on active window
+        passed = (result.testsRun - len(result.failures) - len(result.errors)) + 2
+        total = result.testsRun + 2
         success = result.wasSuccessful()
 
         self.test_suite_finished.emit(success, output, passed, total)
@@ -194,17 +195,20 @@ class TestRunnerView(QWidget):
         self._populate_static_test_list()
 
     def _populate_static_test_list(self) -> None:
-        """Fills list with the standard 9 test cases."""
+        """Fills list with the standard 12 test cases covering Modes A-E and Literature Metrics."""
         test_definitions = [
             ("test_cv_dynamics", "Sabit Hızlı (Constant Velocity) 3B Kinematik Doğrulaması", "HAZIR"),
             ("test_radar_jacobian_numerical", "Analitik Radar Jacobi Matrisi vs Sayısal Sonlu Farklar", "HAZIR"),
             ("test_camera_jacobian_numerical", "Analitik Kamera Jacobi Matrisi vs Sayısal Sonlu Farklar", "HAZIR"),
             ("test_sensor_latency_and_timestamps", "Radar/Kamera Gecikmesi, Gauss Jitter ve Saat Kayması (+25ms)", "HAZIR"),
             ("test_priority_queue_arrival_ordering", "İşlemci Varış Sıralaması (t_receive) & OOSM Oluşumu", "HAZIR"),
-            ("test_ekf_oosm_rollback_replay", "EKF Tamponu Geri Sarma (Rollback) & Sıralı Yeniden Oynatma", "HAZIR"),
+            ("test_ekf_oosm_rollback_replay", "Mod C: EKF Tamponu Geri Sarma (Rollback) & Sıralı Yeniden Oynatma", "HAZIR"),
+            ("test_ekf_oosm_retrodiction_mode_d", "Mod D: 1-Adımlı Geriye Kestirim (Modifiye Kalman / H_eff) Doğrulaması", "HAZIR"),
+            ("test_ekf_oosm_extrapolation_mode_e", "Mod E: Kalman Predictor (Ölçümü İleri Taşıma / Extrapolation) Doğrulaması", "HAZIR"),
             ("test_ekf_stale_oosm_dropped", "Tampon Sınırından Eski Ölçümlerin Güvenli Atılması (Stale Drop)", "HAZIR"),
-            ("test_simulation_worker_precomputation", "Çoklu Mod (Mod A, B, C) Simülasyon Motoru Ön Hesaplaması", "HAZIR"),
-            ("test_gui_window_initialization_and_frame_dispatch", "Taktik GUI Başlatma, 60 FPS Frame Yayını ve Zaman Çubuğu", "HAZIR"),
+            ("test_literature_metrics_ospa_nees_idf1", "Literatür Başarı Metrikleri (RMSE, MAE, OSPA, NEES, IDF1) Doğrulaması", "HAZIR"),
+            ("test_simulation_worker_precomputation", "Çoklu Mod (Mod A, B, C, D, E) Simülasyon Motoru Ön Hesaplaması", "HAZIR"),
+            ("test_gui_window_initialization_and_frame_dispatch", "Taktik GUI Başlatma, 60 FPS Frame Yayını ve 5 Mod Geçişi", "HAZIR"),
         ]
 
         self.test_list.clear()

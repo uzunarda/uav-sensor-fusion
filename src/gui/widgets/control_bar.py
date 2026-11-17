@@ -1,7 +1,12 @@
 """
 Tactical Playback Control Bar for UAV Sensor Fusion GUI.
 Provides Play/Pause/Reset actions, Speed Multipliers (0.5x, 1x, 2x, Max),
-Radio Mode Switcher (Mode A: Ideal, Mode B: Naive, Mode C: Rollback/Replay),
+Radio Mode Switcher across all 5 Fusion Architectures:
+  - Mode A: Ideal (Zero Latency)
+  - Mode B: Naive EKF (Latency Ignored)
+  - Mode C: OOSM Rollback / Replay (Paper 2)
+  - Mode D: OOSM Modified EKF / 1-Step Retrodiction (Paper 3)
+  - Mode E: OOSM Kalman Predictor / Extrapolation (Paper 4)
 and interactive Timeline Scrubbing Slider in a sharp tactical deck layout.
 """
 
@@ -34,7 +39,7 @@ class PlaybackControlBar(QWidget):
     reset_requested = pyqtSignal()
     seek_requested = pyqtSignal(float)  # target time in seconds
     speed_changed = pyqtSignal(float)   # multiplier: 0.5, 1.0, 2.0, 0.0
-    mode_selected = pyqtSignal(str)     # "MODE_A", "MODE_B", "MODE_C"
+    mode_selected = pyqtSignal(str)     # "MODE_A", "MODE_B", "MODE_C", "MODE_D", "MODE_E"
 
     def __init__(self, sim_duration: float = 20.0, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -109,7 +114,7 @@ class PlaybackControlBar(QWidget):
 
         # ---------------- 2. Control Toolbar Row ----------------
         toolbar_row = QHBoxLayout()
-        toolbar_row.setSpacing(12)
+        toolbar_row.setSpacing(10)
 
         # Play / Pause Button
         self.btn_play_pause = QPushButton("[ > ] SİMÜLASYONU BAŞLAT")
@@ -120,11 +125,11 @@ class PlaybackControlBar(QWidget):
                 color: #34D399;
                 border: 1px solid #10B981;
                 border-left: 3px solid #10B981;
-                padding: 5px 14px;
+                padding: 5px 12px;
                 font-family: 'Consolas', monospace;
                 font-weight: bold;
                 font-size: 10px;
-                letter-spacing: 0.5px;
+                letter-spacing: 0.4px;
             }
             QPushButton:hover {
                 background-color: #134E38;
@@ -147,7 +152,7 @@ class PlaybackControlBar(QWidget):
                 background-color: #101923;
                 color: #9FB6C8;
                 border: 1px solid #223548;
-                padding: 5px 12px;
+                padding: 5px 10px;
                 font-family: 'Consolas', monospace;
                 font-weight: bold;
                 font-size: 10px;
@@ -162,12 +167,12 @@ class PlaybackControlBar(QWidget):
         toolbar_row.addWidget(self.btn_reset)
 
         # Speed Selector
-        lbl_speed = QLabel("KOŞUM HIZI:")
+        lbl_speed = QLabel("HIZ:")
         lbl_speed.setStyleSheet("color: #7FA0B8; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
         toolbar_row.addWidget(lbl_speed)
 
         self.combo_speed = QComboBox()
-        self.combo_speed.addItems(["0.5x [YAVAŞ ANALİZ]", "1.0x [GERÇEK ZAMANLI]", "2.0x [HIZLANDIRILMIŞ]", "MAX [AZAMİ HIZ]"])
+        self.combo_speed.addItems(["0.5x [YAVAŞ]", "1.0x [GERÇEK]", "2.0x [HIZLI]", "MAX [AZAMİ]"])
         self.combo_speed.setCurrentIndex(1)  # Default 1.0x
         self.combo_speed.setStyleSheet("""
             QComboBox {
@@ -195,15 +200,17 @@ class PlaybackControlBar(QWidget):
         sep.setStyleSheet("color: #1C2D3E;")
         toolbar_row.addWidget(sep)
 
-        # Simulation Mode Radio Selector
-        lbl_mode = QLabel("FÜZYON MİMARİSİ:")
+        # Simulation Mode Radio Selector (5 Modes)
+        lbl_mode = QLabel("OOSM / FÜZYON MİMARİSİ:")
         lbl_mode.setStyleSheet("color: #F59E0B; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
         toolbar_row.addWidget(lbl_mode)
 
         self.radio_group = QButtonGroup(self)
-        self.rb_mode_a = QRadioButton("MOD A [İDEAL / 0ms]")
-        self.rb_mode_b = QRadioButton("MOD B [NAIVE EKF]")
-        self.rb_mode_c = QRadioButton("MOD C [OOSM ROLLBACK/REPLAY]")
+        self.rb_mode_a = QRadioButton("MOD A [İDEAL]")
+        self.rb_mode_b = QRadioButton("MOD B [NAIVE]")
+        self.rb_mode_c = QRadioButton("MOD C [ROLLBACK]")
+        self.rb_mode_d = QRadioButton("MOD D [MOD-EKF]")
+        self.rb_mode_e = QRadioButton("MOD E [PREDICTOR]")
         self.rb_mode_c.setChecked(True)  # Default Mode C
 
         radio_style = """
@@ -212,7 +219,7 @@ class PlaybackControlBar(QWidget):
                 font-family: 'Consolas', monospace;
                 font-size: 10px;
                 font-weight: bold;
-                spacing: 6px;
+                spacing: 5px;
                 border: none;
             }
             QRadioButton::indicator:checked {
@@ -228,7 +235,7 @@ class PlaybackControlBar(QWidget):
                 height: 9px;
             }
         """
-        for rb in (self.rb_mode_a, self.rb_mode_b, self.rb_mode_c):
+        for rb in (self.rb_mode_a, self.rb_mode_b, self.rb_mode_c, self.rb_mode_d, self.rb_mode_e):
             rb.setStyleSheet(radio_style)
             self.radio_group.addButton(rb)
             toolbar_row.addWidget(rb)
@@ -277,6 +284,10 @@ class PlaybackControlBar(QWidget):
             self.mode_selected.emit("MODE_B")
         elif button == self.rb_mode_c:
             self.mode_selected.emit("MODE_C")
+        elif button == self.rb_mode_d:
+            self.mode_selected.emit("MODE_D")
+        elif button == self.rb_mode_e:
+            self.mode_selected.emit("MODE_E")
 
     def _on_slider_pressed(self) -> None:
         self._is_user_scrubbing = True

@@ -102,8 +102,9 @@ uav-sensor-fusion/
 │   ├── dynamics.py            # Hedef dinamikleri ve analitik yörünge üreteci
 │   ├── sensors.py             # Radar & Kamera sensör modelleri (gecikme, jitter, bias)
 │   ├── simulator.py           # Asenkron heapq tabanlı sensör olay simülatörü
-│   ├── ekf.py                 # EKF motoru, analitik Jacobiler, Joseph formu, OOSM buffer
-│   ├── main.py                # Aşama 2 Kıyaslama Benchmark'ı (Mod A, Mod B, Mod C)
+│   ├── ekf.py                 # EKF motoru, analitik Jacobiler, Joseph formu, OOSM (Rollback, Retrodiction, Predictor)
+│   ├── metrics.py             # Literatür başarı metrikleri (RMSE, MAE, OSPA, NEES, NIS, IDF1, Track Cont., Exec Time)
+│   ├── main.py                # 5 Modlu OOSM & Literatür Metrikleri Kıyaslama Benchmark'ı (Mod A, B, C, D, E)
 │   └── gui/                   # Faz 2.5: Canlı Taktik Radar GUI Konsolu (PyQt6 + PyQtGraph)
 │       ├── app.py             # QMainWindow Komuta Merkezi ana uygulaması
 │       ├── worker.py          # 60 FPS Simülasyon iş parçacığı & veri hazırlayıcı
@@ -143,10 +144,12 @@ Tüm ajanlar projede değişiklik veya ekleme yaparken aşağıdaki kurallara **
 4. **Analitik ve Sayısal Jacobian Doğrulaması:**
    - Yeni bir sensör veya doğrusal olmayan ölçüm fonksiyonu eklendiğinde `tests/test_ekf.py` içerisine merkezi sonlu farklar (central finite difference) ile analitik Jacobian'ı kıyaslayan bir test eklenmelidir.
 5. **Simülasyon Modu Bütünlüğü:**
-   - Projede 3 mod kıyaslaması esastır:
+   - Projede 5 modlu OOSM kıyaslama mimarisi esastır:
      - **Mod A:** İdeal (Sıfır gecikme).
      - **Mod B:** Naive (Gecikmeler var ama filtre habersiz; ölçüm varış anında işlenir).
-     - **Mod C:** OOSM Rollback/Replay destekli gecikme telafili EKF.
+     - **Mod C:** OOSM Rollback/Replay destekli gecikme telafili EKF (Makale 2).
+     - **Mod D:** OOSM 1-Adımlı Retrodiction / Modifiye Kalman destekli EKF (Makale 3).
+     - **Mod E:** OOSM Kalman Predictor / Ölçümü İleri Taşıma destekli EKF (Makale 4).
    - Yeni bir algoritma eklendiğinde bu mod mimarisini bozmamalıdır.
 6. **Mevcut Yorum ve Dökümantasyonun Korunması:**
    - Var olan fonksiyon docstring'leri ve matematiksel açıklamalar silinmemeli, geliştirilmelidir.

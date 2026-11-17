@@ -24,8 +24,9 @@ uav-sensor-fusion/
 │   ├── dynamics.py           # 3B Sabit Hızlı (CV) Kinematik Model ve Yer Gerçeği Üreteci
 │   ├── sensors.py            # Radar (10 Hz) ve Kamera/EO (30 Hz) Sensör Modelleri (Gecikme & Bias)
 │   ├── simulator.py          # heapq Tabanlı Asenkron Öncelik Olay Kuyruğu (t_receive sıralı)
-│   ├── ekf.py                # Asenkron EKF Motoru (OOSM Rollback/Replay & Joseph Formu)
-│   ├── main.py               # Aşama 2 Kıyaslama Benchmark'ı (Mod A, Mod B, Mod C Karşılaştırması)
+│   ├── ekf.py                # Asenkron EKF Motoru (Mod C Rollback, Mod D Retrodiction, Mod E Predictor & Joseph Formu)
+│   ├── metrics.py            # Literatür Başarı Metrikleri (RMSE, MAE, OSPA, NEES, NIS, IDF1, Track Continuity, Exec Time)
+│   ├── main.py               # 5 Modlu OOSM & Literatür Metrikleri Benchmark'ı (Mod A, B, C, D, E)
 │   └── gui/                  # Faz 2.5: Canlı Taktik Komuta ve Çok Sensörlü Füzyon Konsolu
 │       ├── __init__.py
 │       ├── app.py            # Ana QMainWindow Taktik Kokpit ve 4 Sekmeli Komuta Merkezi
@@ -106,10 +107,12 @@ $$\mathbf{P}_k = (\mathbf{I} - \mathbf{K}_k \mathbf{H}_k) \mathbf{P}_{k|k-1} (\m
 
 Ayrıca her adımdan sonra simetri zorlanır: $\mathbf{P} = \frac{1}{2}(\mathbf{P} + \mathbf{P}^T)$.
 
-### E. Asenkron Öncelik Kuyruğu ve OOSM Rollback/Replay Motoru
+### E. Asenkron Öncelik Kuyruğu ve Çoklu OOSM Telafi Algoritmaları
 - **Asenkron Kuyruk (`simulator.py`):** Sensörler bağımsız frekanslara (10 Hz vs 30 Hz), iletim gecikmelerine ($\tau$) ve donanım jitter'ına sahiptir. Olaylar işlemciye varış anına ($t_{receive} = t_{capture} + \tau + \epsilon$) göre `heapq` ile sıralanır.
 - **Sıra Dışı Ölçüm (OOSM):** Kamera işlem süresi radardan uzun olduğunda $t_{capture} < t_{filter}$ durumu oluşur.
-- **Rollback / Replay:** Filtre geçmişe ait bir `FilterSnapshot` listesi tutar. Sıra dışı ölçüm algılandığında en yakın geçmiş duruma geri sarılır (rollback), gecikmiş ölçüm araya eklenir ve güncel zamana kadar adımlar yeniden koşturulur (replay).
+- **Mod C — Rollback / Buffer-Replay (Makale 2: Retrodiction/Rollback):** Filtre geçmişe ait bir `FilterSnapshot` dairesel tamponu tutar. Sıra dışı ölçüm algılandığında en yakın geçmiş duruma geri sarılır (`rollback`), gecikmiş ölçüm araya eklenir ve güncel zamana kadar tüm ara adımlar yeniden koşturulur (`replay`).
+- **Mod D — 1-Adımlı Retrodiction / Modifiye Kalman (Makale 3: Delay-Compensated Modified EKF):** Tamponu yeniden oynatmadan ($O(1)$ karmaşıklık), durum geri geçiş matrisi $\mathbf{F}(-\delta)$ ile geçmiş durumu $\hat{\mathbf{x}}_{d|k} = \mathbf{F}(-\delta)\hat{\mathbf{x}}_{k|k}$ kestirir ve gözlem gecikmesini doğrudan gözlem matrisine ($\mathbf{H}_{eff} = \mathbf{H}_d \mathbf{F}(-\delta)$) katarak güncel durumu tek adımda günceller.
+- **Mod E — Kalman Predictor / Ölçümü İleri Taşıma (Makale 4: Forward Measurement Extrapolation):** Gecikmeli sensör ölçümü $\mathbf{z}(t_d)$'yi kinematik hız kestirimiyle güncel filtre zamanına ileri taşır ($\mathbf{z}_{extrap}(t_k) = \mathbf{z}(t_d) + \mathbf{H}_k \Delta \hat{\mathbf{x}}(\delta)$) ve ekstrapolasyon belirsizliğini $\mathbf{R}_{extrap}$ kovaryansına ekleyerek standart EKF güncellemesi uygular.
 
 ---
 
@@ -151,21 +154,27 @@ Modern askeri durumsal farkındalık konsolu görünümünde, **PyQt6** ve **PyQ
 
 ---
 
-## 4. Aşama 2: Performans Kıyaslama Benchmark Sonuçları
+## 4. Çoklu OOSM Yöntemleri ve Literatür Başarı Metrikleri Benchmark Sonuçları
 
-Aşağıdaki metrikler 20 saniyelik manevralı hedef uçuş senaryosunda $10\text{ Hz}$ Radar ve $30\text{ Hz}$ Kamera verileriyle elde edilmiştir:
+Aşağıdaki metrikler 20 saniyelik hedef uçuş senaryosunda $10\text{ Hz}$ Radar ve $30\text{ Hz}$ Kamera verileriyle 5 farklı mimari (`Mod A - Mod E`) için elde edilmiştir:
 
-| Metrik / Parametre | Mod A (İdeal) | Mod B (Naive / Gecikmeli) | Mod C (Rollback / OOSM Telafili) |
-|---|---|---|---|
-| **Kalıcı Durum 3B Konum RMSE** | **1.954 m** | **3.464 m** | **2.681 m (%22.6 İyileşme)** |
-| - Eksen X (Kuzey) RMSE | 1.304 m | 1.870 m | 1.474 m |
-| - Eksen Y (Doğu) RMSE | 0.971 m | 2.381 m | 1.498 m |
-| - Eksen Z (İrtifa) RMSE | 1.085 m | 1.684 m | 1.664 m |
-| **Toplam 3B Konum RMSE** | 3.119 m | 4.241 m | 3.572 m |
-| **Kalıcı Durum 3B Hız RMSE** | 0.918 m/s | 1.111 m/s | 1.108 m/s |
-| **Toplam 3B Hız RMSE** | 3.859 m/s | 3.668 m/s | 3.701 m/s |
-| **İşlenen OOSM Sayısı** | 0 (Gecikmesiz) | 0 (Yönetilemez) | **127 Olay** |
-| **Atılan (Dropped) OOSM** | 0 | 0 | **0 Olay (%100 Başarı)** |
+| Metrik / Parametre | Mod A (İdeal) | Mod B (Naive) | Mod C (Rollback) | Mod D (Mod-EKF) | Mod E (Predictor) |
+|---|---|---|---|---|---|
+| **Kalıcı Durum 3B Konum RMSE** | **1.954 m** | **3.464 m** | **2.681 m** | **2.681 m** | **2.712 m** |
+| - Eksen X (Kuzey) RMSE | 1.304 m | 1.870 m | 1.474 m | 1.474 m | 1.487 m |
+| - Eksen Y (Doğu) RMSE | 0.971 m | 2.381 m | 1.498 m | 1.498 m | 1.541 m |
+| - Eksen Z (İrtifa) RMSE | 1.085 m | 1.684 m | 1.664 m | 1.665 m | 1.664 m |
+| **Toplam 3B Konum RMSE** | 3.119 m | 4.241 m | 3.572 m | 3.571 m | 3.599 m |
+| **Kalıcı Durum 3B Konum MAE** | 1.827 m | 3.322 m | 2.443 m | 2.443 m | 2.479 m |
+| **Kalıcı Durum OSPA Skoru** | **1.827 m** | **3.476 m** | **2.443 m** | **2.443 m** | **2.479 m** |
+| **Kalıcı Durum 3B Hız RMSE** | 0.918 m/s | 1.111 m/s | 1.108 m/s | 1.107 m/s | 1.110 m/s |
+| **Filtre Tutarlılığı NEES (İdeal ~6.0)** | 1.99 | 10.41 (Tutarsız) | **4.75** | **4.74** | **4.97** |
+| **Yenilik Tutarlılığı NIS** | 1.74 | 1.75 | 1.64 | 1.74 | 1.75 |
+| **İz Sürekliliği (Track Cont. %)** | %100.0 | %90.3 | **%94.9** | **%94.9** | **%94.7** |
+| **Kimlik Koruma IDF1 Skoru** | 1.000 | 0.903 | **0.949** | **0.949** | **0.947** |
+| **İşlenen OOSM Olay Sayısı** | 0 (0ms) | 0 (Telafisiz) | **127 Olay** | **127 Olay** | **127 Olay** |
+| **Döngü Süresi (us/pkt)** | 47.6 us | 50.3 us | 53.1 us | **47.8 us** | **48.2 us** |
+| **Mod B (Naive)'ye Göre İyileşme** | - | Referans | **%22.6** | **%22.6** | **%21.7** |
 
 ---
 

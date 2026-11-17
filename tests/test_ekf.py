@@ -14,6 +14,12 @@ from src.dynamics import TargetState, ConstantVelocityTrajectory
 from src.sensors import RadarSensor, CameraSensor, SensorMeasurement
 from src.simulator import AsyncSensorEventSimulator
 from src.ekf import ExtendedKalmanFilter
+from src.metrics import (
+    compute_nees_series,
+    compute_ospa_series,
+    compute_track_continuity_and_idf1,
+    evaluate_Comprehensive_metrics,
+)
 
 
 class TestEKFSystem(unittest.TestCase):
@@ -201,6 +207,84 @@ class TestEKFSystem(unittest.TestCase):
         self.assertEqual(ekf.dropped_oosm_count, 1)
         self.assertEqual(ekf.oosm_count, 0)
         self.assertAlmostEqual(ekf.current_time, 5.0)
+
+    def test_ekf_oosm_retrodiction_mode_d(self):
+        """Paper 3 (Mode D): Verify 1-Step Retrodiction / Modified EKF updates state without replay."""
+        x0 = np.array([1000.0, 20.0, 500.0, -10.0, -300.0, 0.0])
+        P0 = np.eye(6) * 100.0
+
+        ekf = ExtendedKalmanFilter(
+            initial_state=x0,
+            initial_covariance=P0,
+            process_noise_spectral_density=0.5,
+            initial_timestamp=0.0,
+            enable_oosm_buffer=True,
+            oosm_strategy="RETRODICTION",
+        )
+        uav_pos = np.zeros(3)
+
+        m1 = SensorMeasurement(t_capture=1.00, sensor_type="RADAR", z=np.array([1150.0]), R_cov=np.array([[25.0]]), t_receive=1.008, uav_pos=uav_pos)
+        ekf.update(m1, uav_pos=uav_pos)
+        self.assertAlmostEqual(ekf.current_time, 1.00)
+
+        # Delayed camera measurement captured at t=0.96s (OOSM relative to t=1.00s)
+        m2_oosm = SensorMeasurement(t_capture=0.96, sensor_type="CAMERA", z=np.array([0.45, -0.25]), R_cov=np.diag([1e-4, 1e-4]), t_receive=1.02, uav_pos=uav_pos)
+        ekf.update(m2_oosm, uav_pos=uav_pos)
+
+        self.assertEqual(ekf.oosm_count, 1)
+        self.assertAlmostEqual(ekf.current_time, 1.00)
+        self.assertEqual(len(ekf.history), 0)  # Mode D does not require snapshot replay buffer
+        P = ekf.get_covariance()
+        self.assertTrue(np.allclose(P, P.T))
+        self.assertTrue(np.all(np.linalg.eigvalsh(P) > 0.0))
+
+    def test_ekf_oosm_extrapolation_mode_e(self):
+        """Paper 4 (Mode E): Verify Kalman Predictor forward measurement extrapolation."""
+        x0 = np.array([1000.0, 20.0, 500.0, -10.0, -300.0, 0.0])
+        P0 = np.eye(6) * 100.0
+
+        ekf = ExtendedKalmanFilter(
+            initial_state=x0,
+            initial_covariance=P0,
+            process_noise_spectral_density=0.5,
+            initial_timestamp=0.0,
+            enable_oosm_buffer=True,
+            oosm_strategy="EXTRAPOLATION",
+        )
+        uav_pos = np.zeros(3)
+
+        m1 = SensorMeasurement(t_capture=1.00, sensor_type="RADAR", z=np.array([1150.0]), R_cov=np.array([[25.0]]), t_receive=1.008, uav_pos=uav_pos)
+        ekf.update(m1, uav_pos=uav_pos)
+
+        m2_oosm = SensorMeasurement(t_capture=0.95, sensor_type="CAMERA", z=np.array([0.45, -0.25]), R_cov=np.diag([1e-4, 1e-4]), t_receive=1.03, uav_pos=uav_pos)
+        ekf.update(m2_oosm, uav_pos=uav_pos)
+
+        self.assertEqual(ekf.oosm_count, 1)
+        self.assertAlmostEqual(ekf.current_time, 1.00)
+        P = ekf.get_covariance()
+        self.assertTrue(np.allclose(P, P.T))
+        self.assertTrue(np.all(np.linalg.eigvalsh(P) > 0.0))
+
+    def test_literature_metrics_ospa_nees_idf1(self):
+        """Verify mathematical properties of NEES, OSPA, MAE, Track Continuity, and IDF1 metrics."""
+        states_gt = np.zeros((10, 6), dtype=np.float64)
+        states_est = np.ones((10, 6), dtype=np.float64)
+        covs = [np.eye(6, dtype=np.float64) for _ in range(10)]
+
+        nees = compute_nees_series(states_est, states_gt, covs)
+        # Error is 1 in each of 6 dimensions with P = I_6 -> NEES must be exactly 6.0
+        np.testing.assert_allclose(nees, np.full(10, 6.0), atol=1e-6)
+
+        pos_err = np.array([2.0, 2.5, 3.0, 20.0])
+        ospa = compute_ospa_series(pos_err, cutoff_c=15.0, order_p=2.0, gate_threshold_m=6.0)
+        self.assertAlmostEqual(ospa[0], 2.0)
+        self.assertLessEqual(ospa[3], 15.0)
+        self.assertGreater(ospa[3], 10.0)
+
+        tc = compute_track_continuity_and_idf1(np.array([1.5, 2.0, 2.5, 8.0]), gate_threshold_m=4.5)
+        self.assertAlmostEqual(tc["track_continuity_pct"], 75.0)
+        self.assertGreater(tc["idf1_score"], 0.5)
+        self.assertLess(tc["idf1_score"], 1.0)
 
 
 if __name__ == "__main__":

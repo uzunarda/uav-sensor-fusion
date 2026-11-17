@@ -1,16 +1,25 @@
 """
-Phase 2 Benchmark and Validation Script for UAV Asynchronous Sensor Fusion.
-Compares 3 Operational Modes:
-  - Mode A (Ideal - Phase 1): Zero-delay asynchronous fusion (t_receive == t_capture).
-  - Mode B (Naive EKF): Latencies, jitter & clock bias present, but filter assumes t_receive is capture epoch.
-  - Mode C (Delay-Compensated EKF): Latencies, jitter & clock bias present, Rollback / Buffer-Replay active.
+Phase 2 & Literature OOSM Methods Benchmark and Validation Script for UAV Asynchronous Sensor Fusion.
+Compares 5 Operational Modes across 7 Literature Performance Metrics:
+  - Mode A (Ideal - Reference): Zero-delay asynchronous fusion (t_receive == t_capture).
+  - Mode B (Naive EKF): Latencies, jitter & clock bias present, filter assumes t_receive is capture epoch.
+  - Mode C (OOSM Rollback/Replay - Paper 2): Circular state buffer rewind & chronological replay.
+  - Mode D (OOSM 1-Step Retrodiction / Modified EKF - Paper 3): Direct delay-embedded observation matrix H_eff = H_d * F(-dt).
+  - Mode E (OOSM Kalman Predictor / Extrapolation - Paper 4): Forward measurement extrapolation to current epoch.
 
-Computes 3D Position & Velocity RMSE, analyzes OOSM events, and generates comprehensive plots.
+Evaluates:
+  1. 3D Position & Velocity RMSE (m, m/s) + Axial RMSE
+  2. MAE (Mean Absolute Error, m)
+  3. OSPA (Optimal SubPattern Assignment Metric, m)
+  4. NEES & NIS (Normalized Estimation / Innovation Error Squared - Filter Consistency)
+  5. Track Continuity (%) & IDF1 Score (Identity Preservation)
+  6. Execution Time (Total ms & Per-Packet us)
 """
 
 from __future__ import annotations
 import os
 import sys
+import time
 
 # Ensure UTF-8 output on Windows terminal
 if sys.platform == "win32":
@@ -31,6 +40,7 @@ from src.dynamics import TargetState, ConstantVelocityTrajectory
 from src.sensors import RadarSensor, CameraSensor
 from src.simulator import AsyncSensorEventSimulator
 from src.ekf import ExtendedKalmanFilter
+from src.metrics import evaluate_Comprehensive_metrics
 
 
 def run_benchmark(
@@ -40,7 +50,7 @@ def run_benchmark(
     show_plot: bool = False,
 ) -> dict:
     """
-    Executes identical simulation scenario under Modes A, B, and C.
+    Executes identical simulation scenario under Modes A, B, C, D, and E.
 
     Args:
         sim_duration: Simulation duration in seconds (default: 20.0s).
@@ -49,11 +59,11 @@ def run_benchmark(
         show_plot: Whether to display interactive plot window.
 
     Returns:
-        dict: Detailed performance metrics for Modes A, B, and C.
+        dict: Detailed performance metrics for Modes A, B, C, D, and E.
     """
-    print("=" * 84)
-    print("      UAV ASYNCHRONOUS SENSOR FUSION - PHASE 2: OOSM & LATENCY BENCHMARK")
-    print("=" * 84)
+    print("=" * 108)
+    print("   UAV ASYNCHRONOUS SENSOR FUSION - MULTI-METHOD OOSM & LITERATURE METRICS BENCHMARK (MODES A-E)")
+    print("=" * 108)
 
     # 1. Common Scenario & Target Kinematics (NED Frame)
     true_initial_state = TargetState(
@@ -80,7 +90,43 @@ def run_benchmark(
     print(f"[Dynamics] Hedef Başlangıç Konumu: [{true_initial_state.x:.0f}, {true_initial_state.y:.0f}, {true_initial_state.z:.0f}] m")
     print(f"           Hedef Hız Vektörü     : [{true_initial_state.vx:.1f}, {true_initial_state.vy:.1f}, {true_initial_state.vz:.1f}] m/s")
     print(f"[Platform] İHA Referans Konumu   : Kuzey={uav_pos[0]:.0f}m, Doğu={uav_pos[1]:.0f}m, İrtifa={-uav_pos[2]:.0f}m")
-    print("-" * 84)
+    print("-" * 108)
+
+    def _execute_filter_run(events_stream, ekf_instance: ExtendedKalmanFilter, is_naive: bool = False):
+        log_time, log_err_pos, log_err_vel, log_state, log_gt, log_cov, log_nis = [], [], [], [], [], [], []
+        pure_filter_ns = 0
+        for event in events_stream:
+            t0_ns = time.perf_counter_ns()
+            ekf_instance.update(event, uav_pos=uav_pos, is_naive=is_naive)
+            pure_filter_ns += time.perf_counter_ns() - t0_ns
+
+            t_eval = event.t_receive if is_naive else ekf_instance.current_time
+            gt = trajectory.get_state(t_eval).to_vector()
+            est = ekf_instance.x.flatten().copy()
+            cov = ekf_instance.P.copy()
+            err = est - gt
+            pos_err = float(np.linalg.norm(err[[0, 2, 4]]))
+            vel_err = float(np.linalg.norm(err[[1, 3, 5]]))
+
+            log_time.append(t_eval)
+            log_err_pos.append(pos_err)
+            log_err_vel.append(vel_err)
+            log_state.append(est)
+            log_gt.append(gt)
+            log_cov.append(cov)
+            log_nis.append(ekf_instance.last_nis)
+
+        exec_ms = pure_filter_ns / 1e6
+        return evaluate_Comprehensive_metrics(
+            times=log_time,
+            err_pos_list=log_err_pos,
+            err_vel_list=log_err_vel,
+            states_est=log_state,
+            states_gt=log_gt,
+            covs=log_cov,
+            nis_list=log_nis,
+            exec_time_ms=exec_ms,
+        )
 
     # -------------------------------------------------------------------------
     # MODE A: IDEAL (Zero Latency, Zero Jitter, Zero Clock Bias)
@@ -93,6 +139,7 @@ def run_benchmark(
     sim_a.register_sensor(radar_a, phase_offset=0.0)
     sim_a.register_sensor(camera_a, phase_offset=0.0125)
     sim_a.populate_events(t_start=0.0, t_end=sim_duration, uav_position_fn=lambda t: uav_pos)
+    events_mode_a = sim_a.clone_event_stream()
 
     ekf_a = ExtendedKalmanFilter(
         initial_state=x_init_guess.copy(),
@@ -100,39 +147,20 @@ def run_benchmark(
         process_noise_spectral_density=q_continuous,
         enable_oosm_buffer=False,
     )
-
-    log_a_time, log_a_err_pos, log_a_err_vel, log_a_state, log_a_gt = [], [], [], [], []
-    for event in sim_a:
-        ekf_a.update(event, uav_pos=uav_pos, is_naive=False)
-        t_now = ekf_a.current_time
-        gt = trajectory.get_state(t_now).to_vector()
-        est = ekf_a.x.flatten().copy()
-        err = est - gt
-        pos_err = float(np.linalg.norm(err[[0, 2, 4]]))
-        vel_err = float(np.linalg.norm(err[[1, 3, 5]]))
-
-        log_a_time.append(t_now)
-        log_a_err_pos.append(pos_err)
-        log_a_err_vel.append(vel_err)
-        log_a_state.append(est)
-        log_a_gt.append(gt)
-
-    print(f"[Mod A - İdeal]           {len(log_a_time)} olay işlendi (Sıfır gecikmeli asenkron füzyon tamamlandı).")
+    met_a = _execute_filter_run(events_mode_a, ekf_a, is_naive=False)
+    print(f"[Mod A - İdeal (0ms)]             {len(events_mode_a)} olay işlendi | Süre: {met_a['exec_time_ms']:.2f} ms")
 
     # -------------------------------------------------------------------------
-    # MODES B & C: SHARED REALISTIC SENSOR STREAM (Latencies, Jitter & Clock Bias)
-    #   - Radar: 8 ms nominal transmission latency + N(0, 2ms) Gaussian jitter
-    #   - Camera: 40 ms nominal image processing latency + N(0, 5ms) Gaussian jitter
-    #   - Camera Clock Bias: +25 ms constant hardware clock offset
+    # SHARED REALISTIC SENSOR STREAM FOR MODES B, C, D, E
     # -------------------------------------------------------------------------
-    rng_bc = np.random.default_rng(seed)
+    rng_delayed = np.random.default_rng(seed)
     radar_delayed = RadarSensor(
         frequency_hz=10.0,
         sigma_r=6.0,
         latency_mean=0.008,          # 8 ms
         latency_jitter_std=0.002,    # 2 ms
         clock_bias=0.0,
-        rng=rng_bc,
+        rng=rng_delayed,
     )
     camera_delayed = CameraSensor(
         frequency_hz=30.0,
@@ -141,7 +169,7 @@ def run_benchmark(
         latency_mean=0.040,          # 40 ms
         latency_jitter_std=0.005,    # 5 ms
         clock_bias=0.025,            # +25 ms hardware clock bias
-        rng=rng_bc,
+        rng=rng_delayed,
     )
 
     sim_delayed = AsyncSensorEventSimulator(trajectory)
@@ -153,16 +181,24 @@ def run_benchmark(
         uav_position_fn=lambda t: uav_pos,
     )
 
-    # Clone exact stream so Modes B and C process the identical real-world sequence
     events_mode_b = sim_delayed.clone_event_stream()
     events_mode_c = sim_delayed.clone_event_stream()
+    events_mode_d = sim_delayed.clone_event_stream()
+    events_mode_e = sim_delayed.clone_event_stream()
 
-    print(f"[Mod B & C - Gecikmeli]   {num_events_delayed} olay üretildi:")
-    print("                          * Radar: 8ms gecikme ± 2ms jitter")
-    print("                          * Kamera: 40ms gecikme ± 5ms jitter, +25ms saat kayması (clock bias)")
+    # Record latency distribution and OOSM arrival epochs
+    log_delays = []
+    log_oosm_events = []
+    max_cap_seen = 0.0
+    for ev in events_mode_c:
+        if ev.t_capture < max_cap_seen - 1e-9:
+            log_oosm_events.append((ev.t_receive, ev.t_capture, ev.sensor_type))
+        else:
+            max_cap_seen = ev.t_capture
+        log_delays.append((ev.t_receive, ev.t_receive - ev.t_capture, ev.sensor_type))
 
     # -------------------------------------------------------------------------
-    # MODE B: NAIVE EKF (Assumes processor arrival t_receive is capture epoch)
+    # MODE B: NAIVE EKF (Delay-Ignorant)
     # -------------------------------------------------------------------------
     ekf_b = ExtendedKalmanFilter(
         initial_state=x_init_guess.copy(),
@@ -170,27 +206,11 @@ def run_benchmark(
         process_noise_spectral_density=q_continuous,
         enable_oosm_buffer=False,
     )
-
-    log_b_time, log_b_err_pos, log_b_err_vel, log_b_state, log_b_gt = [], [], [], [], []
-    for event in events_mode_b:
-        ekf_b.update(event, uav_pos=uav_pos, is_naive=True)
-        t_eval = event.t_receive  # In naive mode, filter moves along arrival timeline
-        gt = trajectory.get_state(t_eval).to_vector()
-        est = ekf_b.x.flatten().copy()
-        err = est - gt
-        pos_err = float(np.linalg.norm(err[[0, 2, 4]]))
-        vel_err = float(np.linalg.norm(err[[1, 3, 5]]))
-
-        log_b_time.append(t_eval)
-        log_b_err_pos.append(pos_err)
-        log_b_err_vel.append(vel_err)
-        log_b_state.append(est)
-        log_b_gt.append(gt)
-
-    print(f"[Mod B - Naive EKF]       {len(log_b_time)} olay işlendi (Gecikmeler ihmal edildi / varış anı capture sanıldı).")
+    met_b = _execute_filter_run(events_mode_b, ekf_b, is_naive=True)
+    print(f"[Mod B - Naive EKF (Telafisiz)]   {len(events_mode_b)} olay işlendi | Süre: {met_b['exec_time_ms']:.2f} ms")
 
     # -------------------------------------------------------------------------
-    # MODE C: DELAY-COMPENSATED EKF (Rollback / Buffer-Replay Active)
+    # MODE C: OOSM ROLLBACK / BUFFER-REPLAY EKF (Paper 2)
     # -------------------------------------------------------------------------
     ekf_c = ExtendedKalmanFilter(
         initial_state=x_init_guess.copy(),
@@ -199,159 +219,229 @@ def run_benchmark(
         enable_oosm_buffer=True,
         max_buffer_size=150,
         max_buffer_dt=1.0,
+        oosm_strategy="ROLLBACK",
     )
-
-    log_c_time, log_c_err_pos, log_c_err_vel, log_c_state, log_c_gt = [], [], [], [], []
-    log_delays = []
-    log_oosm_events = []
-
-    for event in events_mode_c:
-        is_oosm = event.t_capture < ekf_c.current_time - 1e-9
-        if is_oosm:
-            log_oosm_events.append((event.t_receive, event.t_capture, event.sensor_type))
-
-        log_delays.append((event.t_receive, event.t_receive - event.t_capture, event.sensor_type))
-
-        ekf_c.update(event, uav_pos=uav_pos, is_naive=False)
-
-        # Evaluate filter state against ground truth at current filter epoch
-        t_eval = ekf_c.current_time
-        gt = trajectory.get_state(t_eval).to_vector()
-        est = ekf_c.x.flatten().copy()
-        err = est - gt
-        pos_err = float(np.linalg.norm(err[[0, 2, 4]]))
-        vel_err = float(np.linalg.norm(err[[1, 3, 5]]))
-
-        log_c_time.append(t_eval)
-        log_c_err_pos.append(pos_err)
-        log_c_err_vel.append(vel_err)
-        log_c_state.append(est)
-        log_c_gt.append(gt)
-
-    print(f"[Mod C - Telafili EKF]    {len(log_c_time)} olay işlendi:")
-    print(f"                          * Başarıyla yönetilen OOSM sayısı : {ekf_c.oosm_count}")
-    print(f"                          * Tampon dışı atılan (dropped)    : {ekf_c.dropped_oosm_count}")
+    met_c = _execute_filter_run(events_mode_c, ekf_c, is_naive=False)
+    print(f"[Mod C - OOSM Rollback/Replay]    {len(events_mode_c)} olay işlendi | OOSM: {ekf_c.oosm_count} | Süre: {met_c['exec_time_ms']:.2f} ms")
 
     # -------------------------------------------------------------------------
-    # METRICS EVALUATION & STATISTICAL SUMMARY
+    # MODE D: OOSM 1-STEP RETRODICTION / MODIFIED EKF (Paper 3)
     # -------------------------------------------------------------------------
-    def calc_metrics(times, err_pos_list, err_vel_list, states, gts):
-        t_arr = np.array(times)
-        p_err = np.array(err_pos_list)
-        v_err = np.array(err_vel_list)
-        st_arr = np.array(states)
-        gt_arr = np.array(gts)
-        diff = st_arr - gt_arr
+    ekf_d = ExtendedKalmanFilter(
+        initial_state=x_init_guess.copy(),
+        initial_covariance=P_init.copy(),
+        process_noise_spectral_density=q_continuous,
+        enable_oosm_buffer=True,
+        max_buffer_size=150,
+        max_buffer_dt=1.0,
+        oosm_strategy="RETRODICTION",
+    )
+    met_d = _execute_filter_run(events_mode_d, ekf_d, is_naive=False)
+    print(f"[Mod D - OOSM Modifiye EKF]       {len(events_mode_d)} olay işlendi | OOSM: {ekf_d.oosm_count} | Süre: {met_d['exec_time_ms']:.2f} ms")
 
-        # Steady-state window (t >= 3.0s)
-        ss_mask = t_arr >= 3.0
-        ss_p_err = p_err[ss_mask] if np.any(ss_mask) else p_err
-        ss_v_err = v_err[ss_mask] if np.any(ss_mask) else v_err
-        ss_diff = diff[ss_mask] if np.any(ss_mask) else diff
+    # -------------------------------------------------------------------------
+    # MODE E: OOSM KALMAN PREDICTOR / MEASUREMENT EXTRAPOLATION (Paper 4)
+    # -------------------------------------------------------------------------
+    ekf_e = ExtendedKalmanFilter(
+        initial_state=x_init_guess.copy(),
+        initial_covariance=P_init.copy(),
+        process_noise_spectral_density=q_continuous,
+        enable_oosm_buffer=True,
+        max_buffer_size=150,
+        max_buffer_dt=1.0,
+        oosm_strategy="EXTRAPOLATION",
+    )
+    met_e = _execute_filter_run(events_mode_e, ekf_e, is_naive=False)
+    print(f"[Mod E - OOSM Kalman Predictor]   {len(events_mode_e)} olay işlendi | OOSM: {ekf_e.oosm_count} | Süre: {met_e['exec_time_ms']:.2f} ms")
 
-        return {
-            "total_pos_rmse": float(np.sqrt(np.mean(p_err**2))),
-            "ss_pos_rmse": float(np.sqrt(np.mean(ss_p_err**2))),
-            "ss_rmse_x": float(np.sqrt(np.mean(ss_diff[:, 0] ** 2))),
-            "ss_rmse_y": float(np.sqrt(np.mean(ss_diff[:, 2] ** 2))),
-            "ss_rmse_z": float(np.sqrt(np.mean(ss_diff[:, 4] ** 2))),
-            "total_vel_rmse": float(np.sqrt(np.mean(v_err**2))),
-            "ss_vel_rmse": float(np.sqrt(np.mean(ss_v_err**2))),
-            "diff": diff,
-            "t_arr": t_arr,
-            "p_err": p_err,
-            "v_err": v_err,
-        }
-
-    met_a = calc_metrics(log_a_time, log_a_err_pos, log_a_err_vel, log_a_state, log_a_gt)
-    met_b = calc_metrics(log_b_time, log_b_err_pos, log_b_err_vel, log_b_state, log_b_gt)
-    met_c = calc_metrics(log_c_time, log_c_err_pos, log_c_err_vel, log_c_state, log_c_gt)
-
-    pos_improvement_vs_naive = (1.0 - met_c["ss_pos_rmse"] / met_b["ss_pos_rmse"]) * 100.0
+    pos_improvement_c = (1.0 - met_c["ss_pos_rmse"] / met_b["ss_pos_rmse"]) * 100.0
+    pos_improvement_d = (1.0 - met_d["ss_pos_rmse"] / met_b["ss_pos_rmse"]) * 100.0
+    pos_improvement_e = (1.0 - met_e["ss_pos_rmse"] / met_b["ss_pos_rmse"]) * 100.0
     vel_improvement_vs_naive = (1.0 - met_c["ss_vel_rmse"] / met_b["ss_vel_rmse"]) * 100.0
 
-    print("\n" + "=" * 84)
-    print("            PROJE 2. AŞAMA: PERFORMANS VE KIYASLAMA TABLOSU")
-    print("=" * 84)
-    col_w = [34, 15, 15, 16]
-    print(f"{'Metrik / Parametre':<{col_w[0]}} | {'Mod A (İdeal)':<{col_w[1]}} | {'Mod B (Naive)':<{col_w[2]}} | {'Mod C (Rollback)':<{col_w[3]}}")
-    print("-" * 84)
-    print(f"{'Kalıcı Durum 3B Konum RMSE (m)':<{col_w[0]}} | {met_a['ss_pos_rmse']:<{col_w[1]}.3f} | {met_b['ss_pos_rmse']:<{col_w[2]}.3f} | {met_c['ss_pos_rmse']:<{col_w[3]}.3f}")
-    print(f"{'  - Eksen X (Kuzey) RMSE (m)':<{col_w[0]}} | {met_a['ss_rmse_x']:<{col_w[1]}.3f} | {met_b['ss_rmse_x']:<{col_w[2]}.3f} | {met_c['ss_rmse_x']:<{col_w[3]}.3f}")
-    print(f"{'  - Eksen Y (Doğu) RMSE (m)':<{col_w[0]}} | {met_a['ss_rmse_y']:<{col_w[1]}.3f} | {met_b['ss_rmse_y']:<{col_w[2]}.3f} | {met_c['ss_rmse_y']:<{col_w[3]}.3f}")
-    print(f"{'  - Eksen Z (İrtifa) RMSE (m)':<{col_w[0]}} | {met_a['ss_rmse_z']:<{col_w[1]}.3f} | {met_b['ss_rmse_z']:<{col_w[2]}.3f} | {met_c['ss_rmse_z']:<{col_w[3]}.3f}")
-    print(f"{'Toplam 3B Konum RMSE (m)':<{col_w[0]}} | {met_a['total_pos_rmse']:<{col_w[1]}.3f} | {met_b['total_pos_rmse']:<{col_w[2]}.3f} | {met_c['total_pos_rmse']:<{col_w[3]}.3f}")
-    print("-" * 84)
-    print(f"{'Kalıcı Durum 3B Hız RMSE (m/s)':<{col_w[0]}} | {met_a['ss_vel_rmse']:<{col_w[1]}.3f} | {met_b['ss_vel_rmse']:<{col_w[2]}.3f} | {met_c['ss_vel_rmse']:<{col_w[3]}.3f}")
-    print(f"{'Toplam 3B Hız RMSE (m/s)':<{col_w[0]}} | {met_a['total_vel_rmse']:<{col_w[1]}.3f} | {met_b['total_vel_rmse']:<{col_w[2]}.3f} | {met_c['total_vel_rmse']:<{col_w[3]}.3f}")
-    print("-" * 84)
-    print(f"{'İşlenen OOSM Olay Sayısı':<{col_w[0]}} | {'0 (Gecikmesiz)':<{col_w[1]}} | {'0 (Yönetilemez)':<{col_w[2]}} | {ekf_c.oosm_count:<{col_w[3]}}")
-    print(f"{'Atılan (Dropped) OOSM Sayısı':<{col_w[0]}} | {'0':<{col_w[1]}} | {'0':<{col_w[2]}} | {ekf_c.dropped_oosm_count:<{col_w[3]}}")
-    lbl_imp = "Mod B (Naive) Moduna Göre İyileşme"
-    print(f"{lbl_imp:<{col_w[0]}} | {'-':<{col_w[1]}} | {'Referans':<{col_w[2]}} | %{pos_improvement_vs_naive:<{col_w[3]-1}.1f}")
-    print("=" * 84)
+    # -------------------------------------------------------------------------
+    # CONSOLE BENCHMARK TABLE (5 MODES x ALL METRICS)
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 116)
+    print("                 PROJE KAPSAMLI OOSM YÖNTEMLERİ VE LİTERATÜR BAŞARI METRİKLERİ TABLOSU")
+    print("=" * 116)
+    cw = [34, 13, 13, 15, 15, 14]
+    hdr = (
+        f"{'Metrik / Parametre':<{cw[0]}} | "
+        f"{'Mod A (İdeal)':<{cw[1]}} | "
+        f"{'Mod B (Naive)':<{cw[2]}} | "
+        f"{'Mod C (Rollback)':<{cw[3]}} | "
+        f"{'Mod D (Mod-EKF)':<{cw[4]}} | "
+        f"{'Mod E (Predict)':<{cw[5]}}"
+    )
+    print(hdr)
+    print("-" * 116)
+
+    def _print_row(label: str, va: str, vb: str, vc: str, vd: str, ve: str) -> None:
+        print(f"{label:<{cw[0]}} | {va:<{cw[1]}} | {vb:<{cw[2]}} | {vc:<{cw[3]}} | {vd:<{cw[4]}} | {ve:<{cw[5]}}")
+
+    _print_row(
+        "Kalıcı Durum 3B Konum RMSE (m)",
+        f"{met_a['ss_pos_rmse']:.3f}", f"{met_b['ss_pos_rmse']:.3f}",
+        f"{met_c['ss_pos_rmse']:.3f}", f"{met_d['ss_pos_rmse']:.3f}", f"{met_e['ss_pos_rmse']:.3f}"
+    )
+    _print_row(
+        "  - Eksen X (Kuzey) RMSE (m)",
+        f"{met_a['ss_rmse_x']:.3f}", f"{met_b['ss_rmse_x']:.3f}",
+        f"{met_c['ss_rmse_x']:.3f}", f"{met_d['ss_rmse_x']:.3f}", f"{met_e['ss_rmse_x']:.3f}"
+    )
+    _print_row(
+        "  - Eksen Y (Doğu) RMSE (m)",
+        f"{met_a['ss_rmse_y']:.3f}", f"{met_b['ss_rmse_y']:.3f}",
+        f"{met_c['ss_rmse_y']:.3f}", f"{met_d['ss_rmse_y']:.3f}", f"{met_e['ss_rmse_y']:.3f}"
+    )
+    _print_row(
+        "  - Eksen Z (İrtifa) RMSE (m)",
+        f"{met_a['ss_rmse_z']:.3f}", f"{met_b['ss_rmse_z']:.3f}",
+        f"{met_c['ss_rmse_z']:.3f}", f"{met_d['ss_rmse_z']:.3f}", f"{met_e['ss_rmse_z']:.3f}"
+    )
+    _print_row(
+        "Toplam 3B Konum RMSE (m)",
+        f"{met_a['total_pos_rmse']:.3f}", f"{met_b['total_pos_rmse']:.3f}",
+        f"{met_c['total_pos_rmse']:.3f}", f"{met_d['total_pos_rmse']:.3f}", f"{met_e['total_pos_rmse']:.3f}"
+    )
+    print("-" * 116)
+    _print_row(
+        "Kalıcı Durum 3B Konum MAE (m)",
+        f"{met_a['ss_pos_mae']:.3f}", f"{met_b['ss_pos_mae']:.3f}",
+        f"{met_c['ss_pos_mae']:.3f}", f"{met_d['ss_pos_mae']:.3f}", f"{met_e['ss_pos_mae']:.3f}"
+    )
+    _print_row(
+        "Kalıcı Durum OSPA Skoru (m)",
+        f"{met_a['ss_ospa']:.3f}", f"{met_b['ss_ospa']:.3f}",
+        f"{met_c['ss_ospa']:.3f}", f"{met_d['ss_ospa']:.3f}", f"{met_e['ss_ospa']:.3f}"
+    )
+    _print_row(
+        "Kalıcı Durum 3B Hız RMSE (m/s)",
+        f"{met_a['ss_vel_rmse']:.3f}", f"{met_b['ss_vel_rmse']:.3f}",
+        f"{met_c['ss_vel_rmse']:.3f}", f"{met_d['ss_vel_rmse']:.3f}", f"{met_e['ss_vel_rmse']:.3f}"
+    )
+    print("-" * 116)
+    _print_row(
+        "Filtre Tutarlılığı NEES (İdeal~6)",
+        f"{met_a['ss_nees']:.2f}", f"{met_b['ss_nees']:.2f}",
+        f"{met_c['ss_nees']:.2f}", f"{met_d['ss_nees']:.2f}", f"{met_e['ss_nees']:.2f}"
+    )
+    _print_row(
+        "NEES %95 Güven Bandı Uyumu (%)",
+        f"%{met_a['nees_consistency_pct']:.1f}", f"%{met_b['nees_consistency_pct']:.1f}",
+        f"%{met_c['nees_consistency_pct']:.1f}", f"%{met_d['nees_consistency_pct']:.1f}", f"%{met_e['nees_consistency_pct']:.1f}"
+    )
+    _print_row(
+        "Yenilik Tutarlılığı NIS",
+        f"{met_a['ss_nis']:.2f}", f"{met_b['ss_nis']:.2f}",
+        f"{met_c['ss_nis']:.2f}", f"{met_d['ss_nis']:.2f}", f"{met_e['ss_nis']:.2f}"
+    )
+    print("-" * 116)
+    _print_row(
+        "İz Sürekliliği (Track Cont. %)",
+        f"%{met_a['track_continuity_pct']:.1f}", f"%{met_b['track_continuity_pct']:.1f}",
+        f"%{met_c['track_continuity_pct']:.1f}", f"%{met_d['track_continuity_pct']:.1f}", f"%{met_e['track_continuity_pct']:.1f}"
+    )
+    _print_row(
+        "Kimlik Koruma IDF1 Skoru",
+        f"{met_a['idf1_score']:.3f}", f"{met_b['idf1_score']:.3f}",
+        f"{met_c['idf1_score']:.3f}", f"{met_d['idf1_score']:.3f}", f"{met_e['idf1_score']:.3f}"
+    )
+    _print_row(
+        "İşlenen OOSM Olay Sayısı",
+        "0 (0ms)", "0 (Telafisiz)",
+        f"{ekf_c.oosm_count}", f"{ekf_d.oosm_count}", f"{ekf_e.oosm_count}"
+    )
+    _print_row(
+        "Döngü Süresi (us/pkt | Toplam ms)",
+        f"{met_a['exec_us_per_pkt']:.1f}us ({met_a['exec_time_ms']:.1f}ms)",
+        f"{met_b['exec_us_per_pkt']:.1f}us ({met_b['exec_time_ms']:.1f}ms)",
+        f"{met_c['exec_us_per_pkt']:.1f}us ({met_c['exec_time_ms']:.1f}ms)",
+        f"{met_d['exec_us_per_pkt']:.1f}us ({met_d['exec_time_ms']:.1f}ms)",
+        f"{met_e['exec_us_per_pkt']:.1f}us ({met_e['exec_time_ms']:.1f}ms)",
+    )
+    _print_row(
+        "Mod B (Naive)'ye Göre İyileşme",
+        "-", "Referans",
+        f"%{pos_improvement_c:.1f}", f"%{pos_improvement_d:.1f}", f"%{pos_improvement_e:.1f}"
+    )
+    print("=" * 116)
 
     # -------------------------------------------------------------------------
-    # MULTI-PANEL VISUALIZATION (4 SUBPLOTS)
+    # MULTI-PANEL VISUALIZATION (4 SUBPLOTS FOR ALL 5 MODES & NEW METRICS)
     # -------------------------------------------------------------------------
-    fig, axes = plt.subplots(4, 1, figsize=(15, 14), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(15, 15), sharex=True)
     fig.patch.set_facecolor("#F8F9FA")
 
-    c_ideal = "#1F77B4"       # Deep Blue
-    c_naive = "#D62728"       # Crimson Red
-    c_replay = "#2CA02C"      # Forest Green
-    c_radar = "#FF7F0E"       # Amber
-    c_cam = "#9467BD"         # Purple
+    c_ideal = "#1F77B4"       # Deep Blue (Mode A)
+    c_naive = "#D62728"       # Crimson Red (Mode B)
+    c_replay = "#2CA02C"      # Forest Green (Mode C - Rollback)
+    c_retro = "#9467BD"       # Royal Purple (Mode D - 1-Step Retrodiction)
+    c_extrap = "#FF7F0E"      # Vibrant Amber (Mode E - Kalman Predictor)
 
-    # Subplot 1: 3D Position Tracking Error
+    # Subplot 1: 3D Position Tracking Error (RMSE comparison across Modes A-E)
     ax1 = axes[0]
     ax1.set_facecolor("#FFFFFF")
-    ax1.plot(log_b_time, log_b_err_pos, color=c_naive, linewidth=1.8, alpha=0.85,
-             label=f"Mod B (Naive EKF) - Kalıcı RMSE: {met_b['ss_pos_rmse']:.2f} m")
-    ax1.plot(log_c_time, log_c_err_pos, color=c_replay, linewidth=2.0, alpha=0.9,
-             label=f"Mod C (Rollback/Replay EKF) - Kalıcı RMSE: {met_c['ss_pos_rmse']:.2f} m")
-    ax1.plot(log_a_time, log_a_err_pos, color=c_ideal, linewidth=1.5, linestyle="--", alpha=0.8,
-             label=f"Mod A (İdeal Sıfır Gecikme) - Kalıcı RMSE: {met_a['ss_pos_rmse']:.2f} m")
+    ax1.plot(met_b["t_arr"], met_b["p_err"], color=c_naive, linewidth=1.7, alpha=0.80,
+             label=f"Mod B (Naive EKF) - RMSE: {met_b['ss_pos_rmse']:.2f}m | MAE: {met_b['ss_pos_mae']:.2f}m")
+    ax1.plot(met_e["t_arr"], met_e["p_err"], color=c_extrap, linewidth=1.6, linestyle="-.", alpha=0.85,
+             label=f"Mod E (Kalman Predictor / İleri Taşıma) - RMSE: {met_e['ss_pos_rmse']:.2f}m")
+    ax1.plot(met_d["t_arr"], met_d["p_err"], color=c_retro, linewidth=1.8, linestyle="--", alpha=0.90,
+             label=f"Mod D (Modifiye EKF / 1-Adım Retrodiction) - RMSE: {met_d['ss_pos_rmse']:.2f}m")
+    ax1.plot(met_c["t_arr"], met_c["p_err"], color=c_replay, linewidth=2.1, alpha=0.95,
+             label=f"Mod C (Rollback/Replay EKF) - RMSE: {met_c['ss_pos_rmse']:.2f}m")
+    ax1.plot(met_a["t_arr"], met_a["p_err"], color=c_ideal, linewidth=1.4, linestyle=":", alpha=0.80,
+             label=f"Mod A (İdeal Sıfır Gecikme) - RMSE: {met_a['ss_pos_rmse']:.2f}m")
 
-    ax1.set_title("1. 3B Konum Kestirim Hatası: İdeal vs. Naive vs. Rollback/Replay Karşılaştırması",
-                  fontsize=12, fontweight="bold")
-    ax1.set_ylabel("3B Hata (m)", fontsize=11)
+    ax1.set_title("1. 3B Konum Kestirim Hatası (RMSE & MAE): 5 Farklı OOSM / Füzyon Mimarisinin Karşılaştırması",
+                  fontsize=11.5, fontweight="bold")
+    ax1.set_ylabel("3B Hata (m)", fontsize=10.5)
     ax1.grid(True, linestyle=":", alpha=0.6)
-    ax1.legend(loc="upper right", fontsize=10, framealpha=0.95)
-    ax1.set_ylim(0, max(20.0, min(60.0, float(np.percentile(log_b_err_pos, 98)))))
+    ax1.legend(loc="upper right", fontsize=9, framealpha=0.95, ncol=2)
+    ax1.set_ylim(0, max(20.0, min(60.0, float(np.percentile(met_b["p_err"], 98)))))
 
-    # Subplot 2: Axial Position Errors (X, Y, Z for Mode B vs Mode C)
+    # Subplot 2: OSPA Metric & Track Continuity
     ax2 = axes[1]
     ax2.set_facecolor("#FFFFFF")
-    diff_b = met_b["diff"]
-    diff_c = met_c["diff"]
-    ax2.plot(met_b["t_arr"], diff_b[:, 0], color="#E74C3C", linestyle=":", linewidth=1.4, label=r"Naive $e_x$ (Kuzey)")
-    ax2.plot(met_b["t_arr"], diff_b[:, 2], color="#E67E22", linestyle=":", linewidth=1.4, label=r"Naive $e_y$ (Doğu)")
-    ax2.plot(met_c["t_arr"], diff_c[:, 0], color="#27AE60", linestyle="-", linewidth=1.6, label=r"Rollback $e_x$ (Kuzey)")
-    ax2.plot(met_c["t_arr"], diff_c[:, 2], color="#2980B9", linestyle="-", linewidth=1.6, label=r"Rollback $e_y$ (Doğu)")
-    ax2.axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.7)
+    ax2.plot(met_b["t_arr"], met_b["ospa_arr"], color=c_naive, linewidth=1.6, alpha=0.80,
+             label=f"Mod B (Naive) - OSPA: {met_b['ss_ospa']:.2f}m | IDF1: {met_b['idf1_score']:.2f}")
+    ax2.plot(met_e["t_arr"], met_e["ospa_arr"], color=c_extrap, linewidth=1.5, linestyle="-.", alpha=0.85,
+             label=f"Mod E (Kalman Predictor) - OSPA: {met_e['ss_ospa']:.2f}m | IDF1: {met_e['idf1_score']:.2f}")
+    ax2.plot(met_d["t_arr"], met_d["ospa_arr"], color=c_retro, linewidth=1.7, linestyle="--", alpha=0.90,
+             label=f"Mod D (Modifiye EKF) - OSPA: {met_d['ss_ospa']:.2f}m | IDF1: {met_d['idf1_score']:.2f}")
+    ax2.plot(met_c["t_arr"], met_c["ospa_arr"], color=c_replay, linewidth=2.0, alpha=0.95,
+             label=f"Mod C (Rollback/Replay) - OSPA: {met_c['ss_ospa']:.2f}m | IDF1: {met_c['idf1_score']:.2f}")
+    ax2.plot(met_a["t_arr"], met_a["ospa_arr"], color=c_ideal, linewidth=1.3, linestyle=":", alpha=0.80,
+             label=f"Mod A (İdeal) - OSPA: {met_a['ss_ospa']:.2f}m | IDF1: {met_a['idf1_score']:.2f}")
 
-    ax2.set_title("2. Eksenel Konum Hataları (X ve Y Eksenlerinde Gecikme Kaynaklı Kaymanın Telafisi)",
-                  fontsize=12, fontweight="bold")
-    ax2.set_ylabel("Eksenel Hata (m)", fontsize=11)
+    ax2.set_title("2. OSPA (Optimal SubPattern Assignment) Skoru ve İz Sürekliliği (IDF1) Performansı",
+                  fontsize=11.5, fontweight="bold")
+    ax2.set_ylabel("OSPA Mesafesi (m)", fontsize=10.5)
     ax2.grid(True, linestyle=":", alpha=0.6)
-    ax2.legend(loc="upper right", ncol=4, fontsize=9, framealpha=0.95)
+    ax2.legend(loc="upper right", ncol=2, fontsize=9, framealpha=0.95)
+    ax2.set_ylim(0, 16.5)
 
-    # Subplot 3: 3D Velocity Error
+    # Subplot 3: Filter Consistency NEES (Normalized Estimation Error Squared)
     ax3 = axes[2]
     ax3.set_facecolor("#FFFFFF")
-    ax3.plot(log_b_time, log_b_err_vel, color=c_naive, linewidth=1.8, alpha=0.85,
-             label=f"Mod B (Naive EKF) - Kalıcı RMSE: {met_b['ss_vel_rmse']:.2f} m/s")
-    ax3.plot(log_c_time, log_c_err_vel, color=c_replay, linewidth=2.0, alpha=0.9,
-             label=f"Mod C (Rollback/Replay EKF) - Kalıcı RMSE: {met_c['ss_vel_rmse']:.2f} m/s")
-    ax3.plot(log_a_time, log_a_err_vel, color=c_ideal, linewidth=1.5, linestyle="--", alpha=0.8,
-             label=f"Mod A (İdeal Sıfır Gecikme) - Kalıcı RMSE: {met_a['ss_vel_rmse']:.2f} m/s")
+    ax3.plot(met_b["t_arr"], met_b["nees_arr"], color=c_naive, linewidth=1.5, alpha=0.75,
+             label=f"Mod B (Naive) Ort. NEES: {met_b['ss_nees']:.2f} (Tutarsız / Aşırı Özgüven)")
+    ax3.plot(met_e["t_arr"], met_e["nees_arr"], color=c_extrap, linewidth=1.5, linestyle="-.", alpha=0.85,
+             label=f"Mod E (Predictor) Ort. NEES: {met_e['ss_nees']:.2f}")
+    ax3.plot(met_d["t_arr"], met_d["nees_arr"], color=c_retro, linewidth=1.6, linestyle="--", alpha=0.90,
+             label=f"Mod D (Modifiye EKF) Ort. NEES: {met_d['ss_nees']:.2f}")
+    ax3.plot(met_c["t_arr"], met_c["nees_arr"], color=c_replay, linewidth=1.9, alpha=0.95,
+             label=f"Mod C (Rollback) Ort. NEES: {met_c['ss_nees']:.2f}")
+    ax3.axhline(6.0, color="#1F77B4", linestyle="--", linewidth=1.2, label="İdeal 6-DOF Beklenen NEES (E[NEES] = 6.0)")
+    ax3.axhline(14.45, color="#7F8C8D", linestyle=":", linewidth=1.1, label=r"%95 $\chi^2_6$ Üst Güven Sınırı (14.45)")
 
-    ax3.set_title("3. 3B Hız Kestirim Hatası ve Yakınsama Performansı", fontsize=12, fontweight="bold")
-    ax3.set_ylabel("Hız Hatası (m/s)", fontsize=11)
+    ax3.set_title("3. Filtre Kovaryans Tutarlılığı Analizi: NEES (Normalized Estimation Error Squared)",
+                  fontsize=11.5, fontweight="bold")
+    ax3.set_ylabel("NEES Değeri", fontsize=10.5)
     ax3.grid(True, linestyle=":", alpha=0.6)
-    ax3.legend(loc="upper right", fontsize=10, framealpha=0.95)
-    ax3.set_ylim(0, max(8.0, min(20.0, float(np.percentile(log_b_err_vel, 98)))))
+    ax3.legend(loc="upper right", ncol=2, fontsize=8.5, framealpha=0.95)
+    ax3.set_ylim(0, max(25.0, min(50.0, float(np.percentile(met_b["nees_arr"], 95)))))
 
     # Subplot 4: Latency Distribution and OOSM Arrival Events
     ax4 = axes[3]
@@ -361,10 +451,10 @@ def run_benchmark(
 
     if radar_delays:
         rt, rd = zip(*radar_delays)
-        ax4.scatter(rt, rd, color=c_radar, s=16, alpha=0.65, label="Radar İletim Gecikmesi (~8 ms + 2ms Jitter)", marker="o")
+        ax4.scatter(rt, rd, color="#FF7F0E", s=16, alpha=0.65, label="Radar İletim Gecikmesi (~8 ms + 2ms Jitter)", marker="o")
     if camera_delays:
         ct, cd = zip(*camera_delays)
-        ax4.scatter(ct, cd, color=c_cam, s=14, alpha=0.65, label="Kamera İşleme Gecikmesi (~40 ms + 5ms Jitter)", marker="^")
+        ax4.scatter(ct, cd, color="#9467BD", s=14, alpha=0.65, label="Kamera İşleme Gecikmesi (~40 ms + 5ms Jitter)", marker="^")
 
     if log_oosm_events:
         oosm_t, oosm_c, _ = zip(*log_oosm_events)
@@ -372,12 +462,14 @@ def run_benchmark(
                     color="#D62728", s=35, marker="x", linewidth=1.5,
                     label=f"Algılanan OOSM Olayları (Toplam: {len(log_oosm_events)} adet)")
 
-    ax4.set_title("4. Sensör İletim/İşleme Gecikmeleri ve Algılanan Sıra Dışı Ölçüm (OOSM) Dağılımı",
-                  fontsize=12, fontweight="bold")
+    ax4.set_title(
+        f"4. Sensör Gecikmeleri ve OOSM Dağılımı | Çalışma Süreleri: Mod C={met_c['exec_time_ms']:.1f}ms, Mod D={met_d['exec_time_ms']:.1f}ms, Mod E={met_e['exec_time_ms']:.1f}ms",
+        fontsize=11.5, fontweight="bold",
+    )
     ax4.set_xlabel("Simülasyon Zamanı (s)", fontsize=11)
-    ax4.set_ylabel("Gecikme (ms)", fontsize=11)
+    ax4.set_ylabel("Gecikme (ms)", fontsize=10.5)
     ax4.grid(True, linestyle=":", alpha=0.6)
-    ax4.legend(loc="upper right", fontsize=10, framealpha=0.95)
+    ax4.legend(loc="upper right", fontsize=9.5, framealpha=0.95)
 
     plt.tight_layout()
 
@@ -398,9 +490,15 @@ def run_benchmark(
         "mode_a": met_a,
         "mode_b": met_b,
         "mode_c": met_c,
-        "pos_improvement_vs_naive": pos_improvement_vs_naive,
+        "mode_d": met_d,
+        "mode_e": met_e,
+        "pos_improvement_vs_naive": pos_improvement_c,
+        "pos_improvement_d_vs_naive": pos_improvement_d,
+        "pos_improvement_e_vs_naive": pos_improvement_e,
         "vel_improvement_vs_naive": vel_improvement_vs_naive,
         "oosm_count": ekf_c.oosm_count,
+        "oosm_count_d": ekf_d.oosm_count,
+        "oosm_count_e": ekf_e.oosm_count,
         "dropped_oosm_count": ekf_c.dropped_oosm_count,
     }
 
