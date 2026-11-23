@@ -33,6 +33,8 @@ class ConfigView(QWidget):
     def __init__(self, worker: SimulationWorker, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.worker = worker
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("ConfigView { background-color: #04070A; }")
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(4, 4, 4, 4)
@@ -61,9 +63,33 @@ class ConfigView(QWidget):
         # Scroll Area for forms
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.viewport().setStyleSheet("background-color: #04070A;")
+        scroll.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: #04070A;
+            }
+            QScrollBar:vertical {
+                background-color: #070B10;
+                width: 10px;
+                border: 1px solid #16222E;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #1E3246;
+                min-height: 24px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #38BDF8;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
 
         container = QWidget()
+        container.setObjectName("ConfigScrollContainer")
+        container.setStyleSheet("#ConfigScrollContainer { background-color: #04070A; }")
         form_layout = QVBoxLayout(container)
         form_layout.setContentsMargins(0, 0, 0, 0)
         form_layout.setSpacing(8)
@@ -209,6 +235,14 @@ class ConfigView(QWidget):
                 font-size: 10px;
                 font-weight: bold;
             }
+            QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+                background-color: #0F1A26;
+                border-left: 1px solid #1C2E40;
+                width: 18px;
+            }
+            QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
+                background-color: #17283A;
+            }
         """)
         vbox.addWidget(spin)
 
@@ -239,6 +273,14 @@ class ConfigView(QWidget):
                 font-family: 'Consolas', monospace;
                 font-size: 10px;
                 font-weight: bold;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                background-color: #0F1A26;
+                border-left: 1px solid #1C2E40;
+                width: 18px;
+            }
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background-color: #17283A;
             }
         """)
         vbox.addWidget(spin)

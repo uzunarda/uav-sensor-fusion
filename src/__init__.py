@@ -7,6 +7,12 @@ from .dynamics import TargetState, ConstantVelocityTrajectory
 from .sensors import SensorMeasurement, RadarSensor, CameraSensor
 from .simulator import AsyncSensorEventSimulator
 from .ekf import ExtendedKalmanFilter
+from .metrics import (
+    compute_nees_series,
+    compute_ospa_series,
+    compute_track_continuity_and_idf1,
+    evaluate_Comprehensive_metrics,
+)
 
 __all__ = [
     "TargetState",
@@ -16,4 +22,8 @@ __all__ = [
     "CameraSensor",
     "AsyncSensorEventSimulator",
     "ExtendedKalmanFilter",
+    "compute_nees_series",
+    "compute_ospa_series",
+    "compute_track_continuity_and_idf1",
+    "evaluate_Comprehensive_metrics",
 ]

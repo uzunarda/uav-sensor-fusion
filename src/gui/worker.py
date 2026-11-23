@@ -1,13 +1,19 @@
 """
 Simulation Engine and Background Worker for UAV Multi-Sensor EKF Tactical GUI.
 Supports Real-Time playback, multi-speed multipliers (0.5x, 1x, 2x, Max),
-dynamic Mode switching (Mode A: Ideal, Mode B: Naive, Mode C: Rollback/Replay),
-configurable sensor latency/noise parameters, and instantaneous timeline scrubbing.
+dynamic Mode switching across 5 Fusion Architectures:
+  - Mode A: Ideal (Zero Latency)
+  - Mode B: Naive EKF (Latency Ignored)
+  - Mode C: OOSM Rollback / Buffer-Replay (Paper 2)
+  - Mode D: OOSM 1-Step Retrodiction / Modified EKF (Paper 3)
+  - Mode E: OOSM Kalman Predictor / Measurement Extrapolation (Paper 4)
+Includes live computation of RMSE, MAE, OSPA, NEES, NIS, Track Continuity (%), IDF1, and Execution Time (us).
 """
 
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple
+import time
 import numpy as np
 
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
@@ -16,6 +22,7 @@ from src.dynamics import TargetState, ConstantVelocityTrajectory
 from src.sensors import RadarSensor, CameraSensor, reconstruct_pseudo_cartesian
 from src.simulator import AsyncSensorEventSimulator
 from src.ekf import ExtendedKalmanFilter
+from src.metrics import compute_nees_series, compute_ospa_series, compute_track_continuity_and_idf1
 
 
 @dataclass
@@ -29,15 +36,15 @@ class SyntheticPacketRecord:
     raw_meas_str: str      # Formatted noisy synthetic measurement z_k
     true_meas_str: str     # Formatted ground-truth reference h(x_true)
     noise_delta_str: str   # Formatted synthetic noise / residual delta
-    status: str            # "IN-SEQ", "OOSM-ROLLBACK", or "NAIVE-DELAY"
+    status: str            # "IN-SEQ", "OOSM-ROLLBACK", "OOSM-MOD-EKF", "OOSM-PREDICT", or "NAIVE-DELAY"
     is_oosm: bool = False
 
 
 @dataclass
 class SimulationFrame:
-    """Telemetry, synthetic sensor link, and display state for a single simulation time slice."""
+    """Telemetry, synthetic sensor link, academic metrics, and display state for a single simulation time slice."""
     timestamp: float
-    sim_mode: str  # "MODE_A", "MODE_B", "MODE_C"
+    sim_mode: str  # "MODE_A", "MODE_B", "MODE_C", "MODE_D", "MODE_E"
     target_gt_pos: np.ndarray  # [x, y, z] NED
     target_gt_vel: np.ndarray  # [vx, vy, vz]
     uav_pos: np.ndarray        # [x, y, z] NED
@@ -63,6 +70,14 @@ class SimulationFrame:
     latest_cam_meas: Optional[Tuple[float, float]] = None  # (psi_deg, lambda_deg)
     latest_cam_gt: Optional[Tuple[float, float]] = None    # (psi_gt_deg, lambda_gt_deg)
     recent_packets: List[SyntheticPacketRecord] = field(default_factory=list)
+    # Academic Performance Metrics (Live Telemetry)
+    nees_val: float = 6.0
+    nis_val: float = 1.0
+    ospa_val: float = 0.0
+    mae_pos: float = 0.0
+    track_continuity_pct: float = 100.0
+    idf1_score: float = 1.0
+    step_exec_us: float = 45.0
 
 
 class SimulationWorker(QObject):
@@ -75,6 +90,8 @@ class SimulationWorker(QObject):
         mode_changed(str): Emitted when active mode is switched.
         simulation_finished(): Emitted when timeline reaches the end.
     """
+    ALL_MODES = ["MODE_A", "MODE_B", "MODE_C", "MODE_D", "MODE_E"]
+
     frame_ready = pyqtSignal(object, object, object, object)  # frame, gt_history, ekf_history, raw_history
     playback_state_changed = pyqtSignal(bool)
     mode_changed = pyqtSignal(str)
@@ -135,7 +152,7 @@ class SimulationWorker(QObject):
         self._mode_ekf_tracks: Dict[str, np.ndarray] = {}
         self._mode_raw_points: Dict[str, List[tuple]] = {}
 
-        # Precompute all three modes for instantaneous mode switching and scrubbing
+        # Precompute all 5 modes for instantaneous mode switching and scrubbing
         self.recompute_all_modes()
 
         # Timer for 60 FPS playback (16 ms interval)
@@ -145,8 +162,8 @@ class SimulationWorker(QObject):
         self._timer.timeout.connect(self._on_timer_tick)
 
     def recompute_all_modes(self) -> None:
-        """Precomputes simulation trajectories for Modes A, B, and C."""
-        for mode in ["MODE_A", "MODE_B", "MODE_C"]:
+        """Precomputes simulation trajectories for Modes A, B, C, D, and E."""
+        for mode in self.ALL_MODES:
             self._compute_mode_data(mode)
 
     def _compute_mode_data(self, mode: str) -> None:
@@ -174,7 +191,8 @@ class SimulationWorker(QObject):
             )
             is_naive = False
             enable_oosm = False
-        elif mode == "MODE_B":
+            strategy = "ROLLBACK"
+        else:
             radar = RadarSensor(
                 self.radar_freq_hz,
                 self.radar_sigma_m,
@@ -192,28 +210,22 @@ class SimulationWorker(QObject):
                 clock_bias=self.cam_clock_bias_s,
                 rng=rng,
             )
-            is_naive = True
-            enable_oosm = False
-        else:  # MODE_C
-            radar = RadarSensor(
-                self.radar_freq_hz,
-                self.radar_sigma_m,
-                latency_mean=self.radar_latency_s,
-                latency_jitter_std=self.radar_jitter_s,
-                clock_bias=0.0,
-                rng=rng,
-            )
-            camera = CameraSensor(
-                self.cam_freq_hz,
-                self.cam_sigma_rad,
-                self.cam_sigma_rad,
-                latency_mean=self.cam_latency_s,
-                latency_jitter_std=self.cam_jitter_s,
-                clock_bias=self.cam_clock_bias_s,
-                rng=rng,
-            )
-            is_naive = False
-            enable_oosm = True
+            if mode == "MODE_B":
+                is_naive = True
+                enable_oosm = False
+                strategy = "ROLLBACK"
+            elif mode == "MODE_C":
+                is_naive = False
+                enable_oosm = True
+                strategy = "ROLLBACK"
+            elif mode == "MODE_D":
+                is_naive = False
+                enable_oosm = True
+                strategy = "RETRODICTION"
+            else:  # MODE_E
+                is_naive = False
+                enable_oosm = True
+                strategy = "EXTRAPOLATION"
 
         sim = AsyncSensorEventSimulator(trajectory)
         sim.register_sensor(radar, phase_offset=0.0)
@@ -226,6 +238,7 @@ class SimulationWorker(QObject):
             process_noise_spectral_density=self.q_continuous,
             enable_oosm_buffer=enable_oosm,
             max_buffer_size=self.max_buffer_size,
+            oosm_strategy=strategy,
         )
 
         frames: List[SimulationFrame] = []
@@ -233,6 +246,9 @@ class SimulationWorker(QObject):
         ekf_track_list = []
         raw_points_list = []
         rolling_packets: List[SyntheticPacketRecord] = []
+
+        running_pos_errors: List[float] = []
+        running_nees_vals: List[float] = []
 
         latest_radar_range: Optional[float] = None
         latest_radar_gt: Optional[float] = None
@@ -293,17 +309,20 @@ class SimulationWorker(QObject):
                     uav_pos=self.uav_pos,
                 )
 
-            # Check if this incoming event triggers OOSM in Mode C
+            # Check if this incoming event triggers OOSM in Delay-Compensated modes
             is_oosm_event = False
-            if mode == "MODE_C" and event.t_capture < ekf.current_time - 1e-9:
+            if enable_oosm and event.t_capture < ekf.current_time - 1e-9:
                 is_oosm_event = True
 
+            t0_ns = time.perf_counter_ns()
             ekf.update(event, uav_pos=self.uav_pos, is_naive=is_naive)
+            step_us = (time.perf_counter_ns() - t0_ns) / 1000.0
 
             t_eval = event.t_receive if is_naive else ekf.current_time
             gt_state = trajectory.get_state(t_eval)
             target_gt_pos = gt_state.position.copy()
             target_gt_vel = gt_state.velocity.copy()
+            gt_vec = gt_state.to_vector()
 
             est_state = ekf.x.flatten().copy()
             ekf_pos = est_state[[0, 2, 4]]
@@ -317,12 +336,31 @@ class SimulationWorker(QObject):
             range_to_target = float(np.linalg.norm(ekf_pos - self.uav_pos))
             altitude = float(-ekf_pos[2])  # -z is height in NED
 
+            # Compute instant NEES & OSPA
+            nees_val = float(compute_nees_series(est_state.reshape(1, 6), gt_vec.reshape(1, 6), [ekf.P])[0])
+            ospa_val = float(compute_ospa_series(np.array([err_pos]), nees_series=np.array([nees_val]))[0])
+
+            if t_eval >= 3.0 or len(running_pos_errors) < 10:
+                running_pos_errors.append(err_pos)
+                running_nees_vals.append(nees_val)
+
+            mae_pos = float(np.mean(running_pos_errors))
+            tc_dict = compute_track_continuity_and_idf1(
+                np.array(running_pos_errors),
+                nees_series=np.array(running_nees_vals),
+            )
+
             is_oosm_now = is_oosm_event or (ekf.oosm_count > prev_oosm_count)
             prev_oosm_count = ekf.oosm_count
 
             latency_ms = max(0.0, (event.t_receive - t_phys) * 1000.0)
             if is_oosm_now:
-                pkt_status = "OOSM-ROLLBACK"
+                if mode == "MODE_C":
+                    pkt_status = "OOSM-ROLLBACK"
+                elif mode == "MODE_D":
+                    pkt_status = "OOSM-MOD-EKF"
+                else:
+                    pkt_status = "OOSM-PREDICT"
             elif mode == "MODE_B" and latency_ms > 1.0:
                 pkt_status = "NAIVE-DELAY"
             else:
@@ -370,6 +408,13 @@ class SimulationWorker(QObject):
                 latest_cam_meas=latest_cam_deg,
                 latest_cam_gt=latest_cam_gt_deg,
                 recent_packets=recent_slice,
+                nees_val=nees_val,
+                nis_val=ekf.last_nis,
+                ospa_val=ospa_val,
+                mae_pos=mae_pos,
+                track_continuity_pct=tc_dict["track_continuity_pct"],
+                idf1_score=tc_dict["idf1_score"],
+                step_exec_us=step_us,
             )
             frames.append(frame)
             gt_track_list.append(target_gt_pos)
@@ -423,8 +468,8 @@ class SimulationWorker(QObject):
         self.speed_multiplier = float(multiplier)
 
     def set_mode(self, mode: str) -> None:
-        """Switches active simulation mode ('MODE_A', 'MODE_B', 'MODE_C')."""
-        if mode in ["MODE_A", "MODE_B", "MODE_C"] and mode != self.current_mode:
+        """Switches active simulation mode ('MODE_A', 'MODE_B', 'MODE_C', 'MODE_D', 'MODE_E')."""
+        if mode in self.ALL_MODES and mode != self.current_mode:
             self.current_mode = mode
             self.mode_changed.emit(mode)
             self._emit_current_frame()

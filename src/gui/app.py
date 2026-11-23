@@ -256,7 +256,10 @@ class TacticalRadarApp(QMainWindow):
             "DURUM    : R^6 [x,vx,y,vy,z,vz]",
             "DİNAMİK  : CWNA BLOK-DİYAGONAL",
             "GÜNCELLE : JOSEPH FORMU P_k",
-            "OOSM     : ROLLBACK / REPLAY",
+            "MOD C    : ROLLBACK / REPLAY",
+            "MOD D    : 1-ADIM RETRODICTION",
+            "MOD E    : KALMAN PREDICTOR",
+            "METRİK   : RMSE/OSPA/NEES/IDF1",
         ]:
             lbl_s = QLabel(spec_line)
             lbl_s.setStyleSheet("color: #7FA0B8; font-size: 9px; font-family: 'Consolas', monospace; border: none;")
@@ -382,11 +385,15 @@ class TacticalRadarApp(QMainWindow):
             "MODE_A": "FÜZYON: MOD A [İDEAL]",
             "MODE_B": "FÜZYON: MOD B [NAIVE]",
             "MODE_C": "FÜZYON: MOD C [ROLLBACK]",
+            "MODE_D": "FÜZYON: MOD D [MOD-EKF]",
+            "MODE_E": "FÜZYON: MOD E [PREDICTOR]",
         }
         top_map = {
             "MODE_A": "MOD: MOD A [İDEAL / 0ms]",
             "MODE_B": "MOD: MOD B [NAIVE EKF]",
             "MODE_C": "MOD: MOD C [OOSM ROLLBACK]",
+            "MODE_D": "MOD: MOD D [MODİFİYE EKF]",
+            "MODE_E": "MOD: MOD E [KALMAN PREDICTOR]",
         }
         self.lbl_active_mode.setText(mode_text_map.get(mode, mode))
         self.lbl_top_mode.setText(top_map.get(mode, mode))

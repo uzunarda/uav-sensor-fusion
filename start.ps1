@@ -26,19 +26,26 @@ function Show-Banner {
     Write-Host ""
 }
 
+$script:PyExe = "python"
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        $script:PyExe = "py"
+    }
+}
+
 function Check-Dependencies {
     Write-Host "[1/2] Bagimliliklar denetleniyor..." -ForegroundColor Yellow
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    $pythonCmd = Get-Command $script:PyExe -ErrorAction SilentlyContinue
     if (-not $pythonCmd) {
         Write-Host "HATA: Sisteminizde Python bulunamadi! Lutfen Python 3.9+ kurunuz." -ForegroundColor Red
         Pause
         exit 1
     }
 
-    $missing = python -c "import sys; pkgs=['numpy','scipy','matplotlib','PyQt6','pyqtgraph','OpenGL']; m=[p for p in pkgs if __import__('importlib.util').util.find_spec(p) is None]; print(','.join(m))"
+    $missing = & $script:PyExe -c "import sys; pkgs=['numpy','scipy','matplotlib','PyQt6','pyqtgraph','OpenGL']; m=[p for p in pkgs if __import__('importlib.util').util.find_spec(p) is None]; print(','.join(m))"
     if ($missing) {
         Write-Host "Eksik paketler tespit edildi ($missing). Otomatik kuruluyor..." -ForegroundColor Yellow
-        python -m pip install -r requirements.txt
+        & $script:PyExe -m pip install -r requirements.txt
     } else {
         Write-Host "[OK] Tum Python bagimliliklari eksiksiz mevcut." -ForegroundColor Green
     }
@@ -47,25 +54,25 @@ function Check-Dependencies {
 
 function Run-GUI {
     Write-Host "[2/2] Canli Taktik Radar Konsolu Baslatiliyor (PyQt6 + PyQtGraph 60 FPS)..." -ForegroundColor Green
-    python -m src.gui.app
+    & $script:PyExe -m src.gui.app
 }
 
 function Run-Benchmark {
-    Write-Host ">> Asama 2 Kiyaslama Benchmarki (Mod A vs Mod B vs Mod C) Kosturuluyor..." -ForegroundColor Cyan
-    python src/main.py
+    Write-Host ">> 5 Modlu OOSM & Literatur Basari Metrikleri Benchmarki Kosturuluyor..." -ForegroundColor Cyan
+    & $script:PyExe src/main.py
     Write-Host ""
     Write-Host "Sonuc grafikleri results/ekf_oosm_comparison.png konumuna kaydedildi." -ForegroundColor Green
 }
 
 function Run-Tests {
     Write-Host ">> Tum Birim, Dinamik ve GUI Testleri Kosturuluyor..." -ForegroundColor Yellow
-    python -m unittest discover tests -v
+    & $script:PyExe -m unittest discover tests -v
     Write-Host ""
 }
 
 function Install-Deps {
     Write-Host ">> Bagimliliklar guncelleniyor (pip install -r requirements.txt)..." -ForegroundColor Yellow
-    python -m pip install --upgrade -r requirements.txt
+    & $script:PyExe -m pip install --upgrade -r requirements.txt
     Write-Host "[OK] Kurulum tamamlandi." -ForegroundColor Green
 }
 

@@ -23,12 +23,15 @@ class TestTacticalRadarGUI(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def test_simulation_worker_precomputation(self):
-        """Verify that simulation worker precomputes all 3 modes properly."""
+        """Verify that simulation worker precomputes all 5 modes (Modes A-E) and metrics properly."""
         worker = SimulationWorker(sim_duration=2.0, seed=42)
-        for mode in ["MODE_A", "MODE_B", "MODE_C"]:
+        for mode in ["MODE_A", "MODE_B", "MODE_C", "MODE_D", "MODE_E"]:
             frames = worker._mode_frames.get(mode, [])
             self.assertGreater(len(frames), 20)
             self.assertEqual(frames[0].sim_mode, mode)
+            self.assertGreaterEqual(frames[-1].ospa_val, 0.0)
+            self.assertGreaterEqual(frames[-1].nees_val, 0.0)
+            self.assertGreaterEqual(frames[-1].idf1_score, 0.0)
 
     def test_gui_window_initialization_and_frame_dispatch(self):
         """Verify that TacticalRadarApp initializes and handles frame updates."""
@@ -57,14 +60,11 @@ class TestTacticalRadarGUI(unittest.TestCase):
 
         self.assertGreater(window.worker.current_time, 0.0)
 
-        # Test mode switching via worker
-        window.worker.set_mode("MODE_A")
-        self.app.processEvents()
-        self.assertEqual(window.worker.current_mode, "MODE_A")
-
-        window.worker.set_mode("MODE_C")
-        self.app.processEvents()
-        self.assertEqual(window.worker.current_mode, "MODE_C")
+        # Test mode switching via worker across all 5 modes
+        for m in ["MODE_A", "MODE_B", "MODE_C", "MODE_D", "MODE_E"]:
+            window.worker.set_mode(m)
+            self.app.processEvents()
+            self.assertEqual(window.worker.current_mode, m)
 
         # Test scrubbing
         window.worker.pause()
