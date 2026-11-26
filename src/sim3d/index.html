@@ -370,14 +370,17 @@
         </div>
         <div id="eoir-viewport-wrap">
           <canvas id="eoir-canvas"></canvas>
+          <canvas id="eoir-cv-canvas" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none;"></canvas>
           <div id="eoir-hud-overlay">
             <div style="display:flex; justify-content:space-between;">
-              <span id="eoir-top-left">EO/IR GIMBAL // FOV: 22.0°</span>
+              <span id="eoir-top-left">FPA 320x240 // CFAR + MOMENT CENTROID</span>
               <span id="eoir-top-right">GECİKME: 40.0 ms</span>
             </div>
-            <div class="reticle-center" id="eoir-reticle"></div>
-            <div style="display:flex; justify-content:space-between;">
-              <span id="eoir-bot-left">AZ: +00.00° | EL: +00.00°</span>
+            <div style="display:flex; justify-content:space-between; align-items:flex-end;">
+              <div>
+                <div id="eoir-cv-stats" style="color:#FBBF24; font-size:10.5px; margin-bottom:2px;">CENTROID: (160.0, 120.0)px | BLOB: 18px² | SNR: 26.4dB</div>
+                <div id="eoir-bot-left">PINHOLE AZ: +00.00° | EL: +00.00°</div>
+              </div>
               <span id="eoir-bot-right">MENZİL: 1500.0 m</span>
             </div>
           </div>
@@ -513,8 +516,11 @@
       mainRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
       const eoirWrap = document.getElementById("eoir-viewport-wrap");
-      gimbalRenderer = new THREE.WebGLRenderer({ canvas: eoirCanvas, antialias: true });
+      gimbalRenderer = new THREE.WebGLRenderer({ canvas: eoirCanvas, antialias: true, preserveDrawingBuffer: true });
       gimbalRenderer.setSize(eoirWrap.clientWidth, eoirWrap.clientHeight);
+      const cvCanvas = document.getElementById("eoir-cv-canvas");
+      cvCanvas.width = eoirWrap.clientWidth;
+      cvCanvas.height = eoirWrap.clientHeight;
 
       // High-visibility Hemisphere & Directional Lighting
       const hemiLight = new THREE.HemisphereLight(0xffffff, 0x4d6b53, 1.05);
@@ -609,6 +615,9 @@
         gimbalCamera.aspect = eoirWrap.clientWidth / eoirWrap.clientHeight;
         gimbalCamera.updateProjectionMatrix();
         gimbalRenderer.setSize(eoirWrap.clientWidth, eoirWrap.clientHeight);
+        const cvCanvas = document.getElementById("eoir-cv-canvas");
+        cvCanvas.width = eoirWrap.clientWidth;
+        cvCanvas.height = eoirWrap.clientHeight;
       });
     }
 
@@ -813,9 +822,18 @@
         if (visMap[k] !== undefined) tube.visible = visMap[k];
       }
 
-      // Position Gimbal EO/IR Camera on UAV nose looking at target
+      // Position Gimbal EO/IR Camera on UAV nose with realistic gimbal pointing lag (~0.35 deg servo inertia)
       gimbalCamera.position.copy(uavPos3).add(new THREE.Vector3(0, 6, 0));
-      gimbalCamera.lookAt(gtPos3);
+      if (f.cv) {
+        const lagOffset = new THREE.Vector3(
+          (f.cv.centroid_u - 160.0) * 1.4,
+          -(f.cv.centroid_v - 120.0) * 1.4,
+          0
+        );
+        gimbalCamera.lookAt(gtPos3.clone().add(lagOffset));
+      } else {
+        gimbalCamera.lookAt(gtPos3);
+      }
 
       // Update Main Camera according to selected Camera Mode
       if (cameraMode === "ORBIT") {
@@ -863,21 +881,23 @@
       document.getElementById("val-tgt-att").textContent = `${r2d(f.gt.euler[0])}°/${r2d(f.gt.euler[1])}°/${r2d(f.gt.euler[2])}°`;
 
       document.getElementById("eoir-top-right").textContent = `${f.sensor} GECİKME: ${f.latency_ms.toFixed(1)} ms`;
-      document.getElementById("eoir-bot-left").textContent = `AZ: ${f.raw_az_deg >= 0 ? '+' : ''}${f.raw_az_deg.toFixed(2)}° | EL: ${f.raw_el_deg.toFixed(2)}°`;
+      document.getElementById("eoir-bot-left").textContent = `PINHOLE AZ: ${f.raw_az_deg >= 0 ? '+' : ''}${f.raw_az_deg.toFixed(2)}° | EL: ${f.raw_el_deg.toFixed(2)}°`;
       document.getElementById("eoir-bot-right").textContent = `MENZİL: ${dist.toFixed(1)} m`;
 
+      if (f.cv) {
+        document.getElementById("eoir-cv-stats").textContent =
+          `CENTROID: (${f.cv.centroid_u.toFixed(1)}, ${f.cv.centroid_v.toFixed(1)})px | BLOB: ${f.cv.blob_area_px}px² | SNR: ${f.cv.snr_db.toFixed(1)}dB`;
+      }
+
       const banner = document.getElementById("oosm-banner");
-      const reticle = document.getElementById("eoir-reticle");
       if (mData.is_oosm) {
         banner.textContent = `[UYARI: ${activeMode} OOSM TELAFİ AKTİF] GECİKMELİ PAKET (${f.latency_ms.toFixed(1)}ms) DÜZELTİLDİ`;
         banner.style.background = "#D97706";
         banner.style.color = "#05080C";
-        reticle.style.borderColor = "#F59E0B";
       } else {
         banner.textContent = "OOSM TAMPON DURUMU: [NOMİNAL] // KRONOLOJİK ÖLÇÜM AKIŞI SENKRON";
         banner.style.background = "#0A1915";
         banner.style.color = "#34D399";
-        reticle.style.borderColor = "rgba(16, 185, 129, 0.85)";
       }
     }
 
@@ -968,6 +988,128 @@
       window.location.href = `/api/export_csv?scenario=${scen}&mode=${activeMode}`;
     }
 
+    // =========================================================================
+    // REAL-TIME WEBGL PIXEL SCANNER & FPA THERMAL MATRIX COMPUTER VISION HUD
+    // =========================================================================
+    let pixelBuffer = null;
+
+    function runLiveWebGLVisionProcessor() {
+      if (!gimbalRenderer || !simData || !simData.timeline.length) return;
+      const cvCanvas = document.getElementById("eoir-cv-canvas");
+      const ctx = cvCanvas.getContext("2d");
+      const W = cvCanvas.width;
+      const H = cvCanvas.height;
+      ctx.clearRect(0, 0, W, H);
+
+      const gl = gimbalRenderer.getContext();
+      if (!pixelBuffer || pixelBuffer.length !== W * H * 4) {
+        pixelBuffer = new Uint8Array(W * H * 4);
+      }
+      // 1. Read actual rendered pixels from WebGL EO/IR Gimbal Framebuffer
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixelBuffer);
+
+      // Sample background color at top-left border (x=8, y=H-8)
+      const bgIdx = ((H - 8) * W + 8) * 4;
+      const bgR = pixelBuffer[bgIdx], bgG = pixelBuffer[bgIdx + 1], bgB = pixelBuffer[bgIdx + 2];
+
+      // 2. Scan central ROI of rendered image for Target Aircraft pixels (red/crimson signature & contrast threshold)
+      let sumU = 0, sumV = 0, sumW = 0, blobCount = 0;
+      let minU = W, maxU = 0, minV = H, maxV = 0;
+      const marginX = Math.floor(W * 0.08);
+      const marginY = Math.floor(H * 0.10);
+
+      for (let y = marginY; y < H - marginY; y += 2) {
+        const canvasY = H - 1 - y; // WebGL bottom-up to Canvas top-down
+        for (let x = marginX; x < W - marginX; x += 2) {
+          const idx = (y * W + x) * 4;
+          const r = pixelBuffer[idx], g = pixelBuffer[idx + 1], b = pixelBuffer[idx + 2];
+          // Target aircraft signature score (strong red dominance or high contrast against sky)
+          const redScore = (r - g) + (r - b);
+          const diffBg = Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB);
+          if (redScore > 45 || diffBg > 95) {
+            const weight = Math.max(10, redScore + diffBg);
+            sumU += x * weight;
+            sumV += canvasY * weight;
+            sumW += weight;
+            blobCount += 4;
+            if (x < minU) minU = x;
+            if (x > maxU) maxU = x;
+            if (canvasY < minV) minV = canvasY;
+            if (canvasY > maxV) maxV = canvasY;
+          }
+        }
+      }
+
+      // Draw static optical boresight crosshairs at (W/2, H/2)
+      const cx = W / 2, cy = H / 2;
+      ctx.strokeStyle = "rgba(56, 189, 248, 0.35)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx - 28, cy); ctx.lineTo(cx + 28, cy);
+      ctx.moveTo(cx, cy - 28); ctx.lineTo(cx, cy + 28);
+      ctx.stroke();
+
+      const f = simData.timeline[frameIndex];
+      const isOosm = f.modes[activeMode].is_oosm;
+
+      if (sumW > 0 && blobCount >= 4) {
+        // 3. Sub-pixel intensity-weighted centroid (u_c, v_c) extracted directly from WebGL pixels!
+        const uc = sumU / sumW;
+        const vc = sumV / sumW;
+        const pad = 10;
+        const bx = Math.max(4, minU - pad);
+        const by = Math.max(4, minV - pad);
+        const bw = Math.min(W - bx - 4, Math.max(24, (maxU - minU) + pad * 2));
+        const bh = Math.min(H - by - 4, Math.max(24, (maxV - minV) + pad * 2));
+
+        // Dynamic CV Bounding Box
+        ctx.strokeStyle = isOosm ? "#F59E0B" : "#10B981";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(bx, by, bw, bh);
+
+        // Sub-pixel Centroid Marker
+        ctx.strokeStyle = "#FBBF24";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(uc - 7, vc); ctx.lineTo(uc + 7, vc);
+        ctx.moveTo(uc, vc - 7); ctx.lineTo(uc, vc + 7);
+        ctx.stroke();
+
+        ctx.fillStyle = isOosm ? "#FBBF24" : "#34D399";
+        ctx.font = "bold 10px Consolas, monospace";
+        ctx.fillText(`CV LOCK [${uc.toFixed(1)}, ${vc.toFixed(1)}]`, bx, Math.max(14, by - 4));
+      }
+
+      // 4. Render Python 2D FPA (11x11 Thermal/IR Focal Plane Array Patch) in top-right inset
+      if (f.cv && f.cv.fpa_patch) {
+        const patch = f.cv.fpa_patch;
+        const cell = 5;
+        const ox = W - (11 * cell) - 10;
+        const oy = 26;
+        ctx.fillStyle = "rgba(4, 9, 14, 0.85)";
+        ctx.fillRect(ox - 3, oy - 14, 11 * cell + 6, 11 * cell + 17);
+        ctx.fillStyle = "#38BDF8";
+        ctx.font = "bold 8.5px Consolas, monospace";
+        ctx.fillText("2B FPA MATRİSİ", ox - 1, oy - 4);
+
+        for (let r = 0; r < patch.length; r++) {
+          for (let c = 0; c < patch[r].length; c++) {
+            const val = patch[r][c];
+            const isAboveTh = val >= f.cv.threshold;
+            if (isAboveTh) {
+              ctx.fillStyle = `rgb(${val}, ${Math.min(255, Math.floor(val * 0.9))}, 40)`;
+            } else {
+              ctx.fillStyle = `rgb(10, ${Math.min(70, val + 15)}, ${Math.min(90, val + 25)})`;
+            }
+            ctx.fillRect(ox + c * cell, oy + r * cell, cell - 0.5, cell - 0.5);
+          }
+        }
+        ctx.strokeStyle = "#10B981";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(ox - 1, oy - 1, 11 * cell + 2, 11 * cell + 2);
+      }
+    }
+
     function animate(now) {
       requestAnimationFrame(animate);
       const dt = (now - lastTimestamp) / 1000.0;
@@ -988,7 +1130,24 @@
         mainRenderer.render(scene, mainCamera);
       }
       if (gimbalRenderer && scene && gimbalCamera) {
+        // Hide synthetic HUD helpers so the EO/IR camera only images the physical target aircraft!
+        const savedVis = [];
+        const helpers = [
+          uavGroup, fovConeMesh, covEllipsoidMesh, losLine, uavDropLine, tgtDropLine,
+          ...Object.values(trackLines), ...Object.values(trackTubes)
+        ];
+        helpers.forEach((obj) => {
+          if (obj) {
+            savedVis.push([obj, obj.visible]);
+            obj.visible = false;
+          }
+        });
+
         gimbalRenderer.render(scene, gimbalCamera);
+        runLiveWebGLVisionProcessor();
+
+        // Restore synthetic helpers for main 3D arena view
+        savedVis.forEach(([obj, v]) => { obj.visible = v; });
       }
     }
 

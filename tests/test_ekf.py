@@ -341,6 +341,40 @@ class TestEKFSystem(unittest.TestCase):
         self.assertEqual(uav_pose.dcm_body_to_ned.shape, (3, 3))
         np.testing.assert_allclose(uav_pose.dcm_body_to_ned.T @ uav_pose.dcm_body_to_ned, np.eye(3), atol=1e-12)
 
+    def test_camera_fpa_image_processing_pipeline(self):
+        """Verify 2D FPA synthetic image generation, CFAR thresholding, sub-pixel centroiding, and inverse pinhole projection."""
+        rng = np.random.default_rng(42)
+        cam = CameraSensor(
+            frequency_hz=30.0,
+            sigma_psi=0.004,
+            sigma_lambda=0.004,
+            latency_mean=0.040,
+            latency_jitter_std=0.005,
+            clock_bias=0.025,
+            rng=rng,
+            enable_image_processing=True,
+        )
+        uav_pos = np.array([0.0, 0.0, -150.0])
+        target_pos = np.array([900.0, -450.0, -380.0])
+
+        meas = cam.measure(timestamp=2.0, target_pos=target_pos, uav_pos=uav_pos)
+        self.assertIsNotNone(meas.cv_telemetry)
+        cv = meas.cv_telemetry
+        self.assertIn("centroid_u", cv)
+        self.assertIn("centroid_v", cv)
+        self.assertIn("bbox", cv)
+        self.assertIn("blob_area_px", cv)
+        self.assertIn("snr_db", cv)
+        self.assertGreater(cv["blob_area_px"], 0)
+        self.assertGreater(cv["snr_db"], 8.0)
+
+        # Verify that inverse-pinhole angle from centroid matches true bearing within 3-sigma
+        rel = target_pos - uav_pos
+        true_psi = np.arctan2(rel[1], rel[0])
+        true_lam = np.arcsin(rel[2] / np.linalg.norm(rel))
+        self.assertAlmostEqual(float(meas.z[0]), float(true_psi), delta=0.03)
+        self.assertAlmostEqual(float(meas.z[1]), float(true_lam), delta=0.03)
+
 
 if __name__ == "__main__":
     unittest.main()

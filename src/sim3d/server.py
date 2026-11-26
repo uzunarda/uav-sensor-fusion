@@ -263,6 +263,7 @@ class Sim3DBridgeServer:
         timeline: List[Dict[str, Any]] = []
         last_r: Optional[float] = None
         last_cam: Optional[tuple] = None
+        last_cv: Optional[Dict[str, Any]] = None
 
         for idx, ev in enumerate(events_delayed):
             t_epoch = float(ev.t_receive)
@@ -282,6 +283,8 @@ class Sim3DBridgeServer:
                 last_r = float(ev.z[0])
             else:
                 last_cam = (float(ev.z[0]), float(ev.z[1]))
+                if getattr(ev, "cv_telemetry", None) is not None:
+                    last_cv = ev.cv_telemetry
 
             raw_pos_list: Optional[List[float]] = None
             if last_r is not None and last_cam is not None:
@@ -323,6 +326,7 @@ class Sim3DBridgeServer:
                 "raw_az_deg": round(float(np.degrees(last_cam[0])), 2) if last_cam is not None else 0.0,
                 "raw_el_deg": round(float(np.degrees(last_cam[1])), 2) if last_cam is not None else 0.0,
                 "raw_pos": raw_pos_list,
+                "cv": last_cv,
                 "uav": {
                     "pos": [round(float(uav_pose.position[0]), 2), round(float(uav_pose.position[1]), 2), round(float(uav_pose.position[2]), 2)],
                     "vel": [round(float(uav_pose.velocity[0]), 2), round(float(uav_pose.velocity[1]), 2), round(float(uav_pose.velocity[2]), 2)],
