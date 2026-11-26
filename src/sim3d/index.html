@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>İHA 3B TAKTİK HAVA SAHASI &amp; SANAL EO/IR GIMBAL SİMÜLATÖRÜ [THREE.JS]</title>
+  <style>
+    :root {
+      --bg-dark: #04070A;
+      --panel-bg: rgba(8, 13, 19, 0.92);
+      --panel-border: #182634;
+      --accent-green: #10B981;
+      --accent-cyan: #38BDF8;
+      --accent-amber: #F59E0B;
+      --accent-red: #EF4444;
+      --accent-purple: #A855F7;
+      --text-main: #E2EEF8;
+      --text-muted: #7FA0B8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: 'Consolas', 'Courier New', monospace;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    /* Top Command Header */
+    #top-bar {
+      height: 38px;
+      background: #080C12;
+      border-bottom: 1px solid var(--panel-border);
+      border-left: 4px solid var(--accent-green);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      z-index: 20;
+    }
+    .sys-title {
+      font-size: 11.5px;
+      font-weight: bold;
+      letter-spacing: 0.9px;
+      color: var(--text-main);
+    }
+    .badge-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .tactical-badge {
+      background: #0C131C;
+      border: 1px solid #1B2C3E;
+      padding: 3px 8px;
+      font-size: 10px;
+      font-weight: bold;
+    }
+    /* Main Workspace */
+    #workspace {
+      flex: 1;
+      position: relative;
+      display: flex;
+      overflow: hidden;
+    }
+    #webgl-container {
+      flex: 1;
+      position: relative;
+      background: radial-gradient(circle at 50% 40%, #0A1520 0%, #04070A 80%);
+    }
+    #main-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    /* Floating HUD overlays inside 3D view */
+    #hud-top-left {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-left: 3px solid var(--accent-cyan);
+      padding: 8px 10px;
+      width: 345px;
+      pointer-events: auto;
+    }
+    .panel-hdr {
+      font-size: 10px;
+      font-weight: bold;
+      color: var(--accent-cyan);
+      letter-spacing: 0.7px;
+      margin-bottom: 6px;
+      border-bottom: 1px solid #152230;
+      padding-bottom: 3px;
+    }
+    .legend-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 10px;
+      font-size: 9.5px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .swatch {
+      width: 12px;
+      height: 3px;
+      display: inline-block;
+    }
+    /* Right Sidebar: PIP Onboard EO/IR Gimbal Camera & Live Metrics */
+    #right-dock {
+      width: 410px;
+      background: #070B10;
+      border-left: 1px solid var(--panel-border);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 6px;
+      z-index: 15;
+    }
+    .dock-card {
+      background: #090E15;
+      border: 1px solid #16222E;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+    }
+    /* EO/IR Gimbal Camera Viewport */
+    #eoir-viewport-wrap {
+      position: relative;
+      width: 100%;
+      height: 235px;
+      background: #030806;
+      border: 1px solid #1A3329;
+      overflow: hidden;
+    }
+    #eoir-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    #eoir-hud-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 6px 8px;
+      font-size: 9.5px;
+      color: #34D399;
+      text-shadow: 0 0 3px #000;
+    }
+    .reticle-center {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 68px;
+      height: 68px;
+      transform: translate(-50%, -50%);
+      border: 1px solid rgba(16, 185, 129, 0.55);
+    }
+    .reticle-center::before, .reticle-center::after {
+      content: '';
+      position: absolute;
+      background: rgba(16, 185, 129, 0.85);
+    }
+    .reticle-center::before { top: 50%; left: -10px; right: -10px; height: 1px; }
+    .reticle-center::after { left: 50%; top: -10px; bottom: -10px; width: 1px; }
+    /* Metrics Matrix Table */
+    table.metrics-tbl {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 9px;
+      margin-top: 4px;
+    }
+    table.metrics-tbl th {
+      background: #0D151E;
+      color: var(--text-muted);
+      padding: 4px 3px;
+      text-align: center;
+      border-bottom: 1px solid #1E3042;
+    }
+    table.metrics-tbl th:first-child, table.metrics-tbl td:first-child {
+      text-align: left;
+      padding-left: 4px;
+    }
+    table.metrics-tbl td {
+      padding: 3px 3px;
+      text-align: center;
+      border-bottom: 1px solid #111B24;
+    }
+    /* Telemetry 2x3 Grid */
+    .telem-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      margin-top: 4px;
+    }
+    .telem-cell {
+      background: #0B1017;
+      border: 1px solid #172533;
+      border-left: 2px solid var(--accent-amber);
+      padding: 4px 6px;
+    }
+    .telem-lbl { font-size: 8px; color: var(--text-muted); font-weight: bold; }
+    .telem-val { font-size: 11px; color: var(--accent-green); font-weight: bold; margin-top: 2px; }
+    /* Bottom Control Bar */
+    #control-deck {
+      height: 74px;
+      background: #090E14;
+      border-top: 2px solid #1E3246;
+      padding: 6px 12px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      z-index: 20;
+    }
+    .ctrl-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: nowrap;
+    }
+    button.tac-btn, select.tac-select {
+      background: #0C131B;
+      color: var(--accent-cyan);
+      border: 1px solid #1E3246;
+      padding: 4px 10px;
+      font-family: 'Consolas', monospace;
+      font-size: 10px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button.tac-btn:hover, select.tac-select:hover {
+      background: #142232;
+      color: #FFFFFF;
+      border-color: var(--accent-cyan);
+    }
+    button.tac-btn.primary {
+      background: #0D3B2A;
+      color: #34D399;
+      border-color: var(--accent-green);
+      border-left: 3px solid var(--accent-green);
+    }
+    button.tac-btn.amber {
+      background: #3B2506;
+      color: #FBBF24;
+      border-color: var(--accent-amber);
+      border-left: 3px solid var(--accent-amber);
+    }
+    input[type=range] {
+      flex: 1;
+      accent-color: var(--accent-green);
+      cursor: pointer;
+    }
+    #oosm-banner {
+      font-size: 9.5px;
+      font-weight: bold;
+      padding: 3px 8px;
+      background: #091210;
+      color: #34D399;
+      border: 1px solid #143326;
+      border-left: 3px solid var(--accent-green);
+      text-align: center;
+    }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+  <!-- TOP COMMAND STRIP -->
+  <div id="top-bar">
+    <div class="sys-title">[MOD-05] İHA 3B TAKTİK UÇUŞ, 6-DOF MANEVRA FİZİĞİ VE SANAL EO/IR GIMBAL SİMÜLATÖRÜ [THREE.JS / RK4]</div>
+    <div class="badge-row">
+      <div class="tactical-badge" id="badge-epoch" style="color:#10B981;">EPOCH: T+00.00s</div>
+      <div class="tactical-badge" id="badge-scen" style="color:#F59E0B;">SENARYO: SABİT HIZ [CV]</div>
+      <div class="tactical-badge" id="badge-mode" style="color:#38BDF8;">AKTİF: MOD C [ROLLBACK]</div>
+      <div class="tactical-badge" id="badge-oosm" style="color:#A855F7;">PKT: #0000 | OOSM: 000</div>
+    </div>
+  </div>
+
+  <!-- MAIN WORKSPACE -->
+  <div id="workspace">
+    <!-- LEFT: 3D THREE.JS AIRSPACE ARENA -->
+    <div id="webgl-container">
+      <canvas id="main-canvas"></canvas>
+
+      <!-- Floating Legend & Camera Controls -->
+      <div id="hud-top-left">
+        <div class="panel-hdr">[3B HAVA SAHASI] YÖRÜNGE KATMANLARI &amp; KAMERA</div>
+        <div class="legend-grid">
+          <label class="legend-item"><input type="checkbox" id="chk-gt" checked /> <span class="swatch" style="background:#FFFFFF;"></span> GROUND TRUTH</label>
+          <label class="legend-item"><input type="checkbox" id="chk-a" checked /> <span class="swatch" style="background:#38BDF8;"></span> MOD A [İDEAL]</label>
+          <label class="legend-item"><input type="checkbox" id="chk-b" checked /> <span class="swatch" style="background:#EF4444;"></span> MOD B [NAIVE]</label>
+          <label class="legend-item"><input type="checkbox" id="chk-c" checked /> <span class="swatch" style="background:#10B981;"></span> MOD C [ROLLBACK]</label>
+          <label class="legend-item"><input type="checkbox" id="chk-d" checked /> <span class="swatch" style="background:#A855F7;"></span> MOD D [MOD-EKF]</label>
+          <label class="legend-item"><input type="checkbox" id="chk-e" checked /> <span class="swatch" style="background:#F59E0B;"></span> MOD E [PREDICTOR]</label>
+        </div>
+        <div style="margin-top:7px; display:flex; gap:5px; flex-wrap:wrap;">
+          <button class="tac-btn" onclick="setCameraMode('ORBIT')">[1] SERBEST 3B</button>
+          <button class="tac-btn" onclick="setCameraMode('UAV_CHASE')">[2] İHA TAKİP</button>
+          <button class="tac-btn" onclick="setCameraMode('TARGET_CAM')">[3] HEDEF TAKİP</button>
+          <button class="tac-btn" onclick="setCameraMode('TOP_RADAR')">[4] ÜST RADAR</button>
+        </div>
+        <div style="margin-top:5px; font-size:8.5px; color:#7FA0B8;">
+          FARE: Sol Tık Döndür | Sağ Tık Kaydır | Tekerlek Yakınlaştır (3B NED Çerçevesi)
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT DOCK: ONBOARD EO/IR GIMBAL CAMERA PIP + LIVE ACADEMIC METRICS -->
+    <div id="right-dock">
+      <!-- 1. Onboard EO/IR Gimbal Camera Feed -->
+      <div class="dock-card" style="border-left: 3px solid #10B981;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <span class="panel-hdr" style="margin:0; border:none; color:#10B981;">[MOD-EO] SANAL EO/IR GIMBAL KAMERA (30Hz)</span>
+          <button class="tac-btn" id="btn-flir-mode" onclick="cycleFlirMode()" style="padding:2px 6px; font-size:8.5px;">MOD: TERMAL-YEŞİL</button>
+        </div>
+        <div id="eoir-viewport-wrap">
+          <canvas id="eoir-canvas"></canvas>
+          <div id="eoir-hud-overlay">
+            <div style="display:flex; justify-content:space-between;">
+              <span id="eoir-top-left">EO/IR GIMBAL // FOV: 24.0°</span>
+              <span id="eoir-top-right">GECİKME: 40.0 ms</span>
+            </div>
+            <div class="reticle-center" id="eoir-reticle"></div>
+            <div style="display:flex; justify-content:space-between;">
+              <span id="eoir-bot-left">AZ: +00.00° | EL: +00.00°</span>
+              <span id="eoir-bot-right">MENZİL: 1500.0 m</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Instant 6-DOF & Error Telemetry Counters -->
+      <div class="dock-card" style="border-left: 3px solid #F59E0B;">
+        <div class="panel-hdr" style="color:#F59E0B;">[MOD-01D] ANLIK 6-DOF KİNEMATİK &amp; LİTERATÜR METRİKLERİ</div>
+        <div class="telem-grid">
+          <div class="telem-cell"><div class="telem-lbl">3B KONUM HATASI</div><div class="telem-val" id="val-pos-err" style="color:#F59E0B;">0.00 m</div></div>
+          <div class="telem-cell"><div class="telem-lbl">OSPA MESAFESİ</div><div class="telem-val" id="val-ospa" style="color:#38BDF8;">0.00 m</div></div>
+          <div class="telem-cell"><div class="telem-lbl">NEES / NIS</div><div class="telem-val" id="val-nees">6.0 / 1.0</div></div>
+          <div class="telem-cell"><div class="telem-lbl">HEDEF HIZ / İRTİFA</div><div class="telem-val" id="val-kin">43m/s | 500m</div></div>
+          <div class="telem-cell"><div class="telem-lbl">İHA YATIŞ (R/P/Y)</div><div class="telem-val" id="val-uav-att">0° / 0° / 0°</div></div>
+          <div class="telem-cell"><div class="telem-lbl">HEDEF YATIŞ (R/P/Y)</div><div class="telem-val" id="val-tgt-att">0° / 0° / 0°</div></div>
+        </div>
+        <div id="oosm-banner" style="margin-top:5px;">OOSM TAMPON DURUMU: [NOMİNAL] // KRONOLOJİK AKIŞ SENKRON</div>
+      </div>
+
+      <!-- 3. 5-Mode Literature Metrics Comparison Matrix -->
+      <div class="dock-card" style="flex:1; border-left: 3px solid #38BDF8; overflow:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span class="panel-hdr" style="margin:0; border:none;">[TABLO-01] 5 MODLU LİTERATÜR METRİK MATRİSİ</span>
+          <button class="tac-btn amber" onclick="downloadCSV()" style="padding:2px 7px; font-size:8.5px;">[CSV VERİ SETİ İNDİR]</button>
+        </div>
+        <table class="metrics-tbl" id="metrics-table">
+          <thead>
+            <tr>
+              <th>METRİK</th>
+              <th style="color:#38BDF8;">MOD A</th>
+              <th style="color:#EF4444;">MOD B</th>
+              <th style="color:#10B981;">MOD C</th>
+              <th style="color:#A855F7;">MOD D</th>
+              <th style="color:#F59E0B;">MOD E</th>
+            </tr>
+          </thead>
+          <tbody id="metrics-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM PLAYBACK & SCENARIO CONTROL DECK -->
+  <div id="control-deck">
+    <div class="ctrl-row">
+      <span style="font-size:10px; color:#7FA0B8; font-weight:bold;">ZAMAN [EPOCH]:</span>
+      <span id="lbl-curr-time" style="font-size:11px; color:#10B981; font-weight:bold; width:68px;">T+00.00s</span>
+      <input type="range" id="time-slider" min="0" max="100" value="0" oninput="onSliderScrub(this.value)" />
+      <span id="lbl-total-time" style="font-size:10px; color:#7FA0B8; font-weight:bold;">T+20.00s</span>
+    </div>
+    <div class="ctrl-row">
+      <button class="tac-btn primary" id="btn-play" onclick="togglePlay()">[ || ] DURAKLAT</button>
+      <button class="tac-btn" onclick="resetSim()">[ 0 ] SIFIRLA</button>
+
+      <span style="font-size:10px; color:#7FA0B8; font-weight:bold;">HIZ:</span>
+      <select class="tac-select" id="sel-speed" onchange="speedMult = parseFloat(this.value)">
+        <option value="0.5">0.5x [YAVAŞ]</option>
+        <option value="1.0" selected>1.0x [GERÇEK]</option>
+        <option value="2.0">2.0x [HIZLI]</option>
+        <option value="4.0">4.0x [AZAMİ]</option>
+      </select>
+
+      <span style="font-size:10px; color:#F59E0B; font-weight:bold;">UÇUŞ SENARYOSU [RK4]:</span>
+      <select class="tac-select" id="sel-scenario" onchange="reloadScenario()">
+        <option value="CV">SENARYO 1: SABİT HIZ [CV]</option>
+        <option value="CT">SENARYO 2: KOORDİNELİ VİRAJ [CT - HELİSEL]</option>
+        <option value="EVASIVE">SENARYO 3: KAÇINMA MANEVRASI [S-WEAVE]</option>
+      </select>
+
+      <label style="font-size:10px; color:#34D399; font-weight:bold; display:flex; align-items:center; gap:4px; cursor:pointer;">
+        <input type="checkbox" id="chk-uav-dyn" onchange="reloadScenario()" /> 6-DOF HAREKETLİ İHA
+      </label>
+
+      <span style="font-size:10px; color:#38BDF8; font-weight:bold;">ODAK MODU:</span>
+      <select class="tac-select" id="sel-mode" onchange="activeMode = this.value; updateFrameVisuals()">
+        <option value="MODE_A">MOD A [İDEAL / 0ms]</option>
+        <option value="MODE_B">MOD B [NAIVE EKF]</option>
+        <option value="MODE_C" selected>MOD C [OOSM ROLLBACK]</option>
+        <option value="MODE_D">MOD D [MODİFİYE EKF]</option>
+        <option value="MODE_E">MOD E [KALMAN PREDICTOR]</option>
+      </select>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // COORDINATE MAPPING: NED (North=X, East=Y, Down=Z) -> Three.js (X=East, Y=Altitude=-Z, Z=-North)
+    // =========================================================================
+    function nedToThree(ned) {
+      return new THREE.Vector3(ned[1], -ned[2], -ned[0]);
+    }
+
+    let simData = null;
+    let frameIndex = 0;
+    let isPlaying = true;
+    let speedMult = 1.0;
+    let activeMode = "MODE_C";
+    let cameraMode = "ORBIT";
+    let flirModeIndex = 0; // 0: Thermal Green, 1: White-Hot, 2: EO Day
+    let lastTimestamp = performance.now();
+
+    // Three.js Globals
+    let scene, mainCamera, gimbalCamera, mainRenderer, gimbalRenderer;
+    let uavGroup, targetGroup, fovConeMesh, covEllipsoidMesh, losLine;
+    let trackLines = {};
+    let orbitState = { theta: -0.65, phi: 1.12, radius: 1950, target: new THREE.Vector3(200, 350, -1100), isDragging: false, isPan: false, prevX: 0, prevY: 0 };
+
+    function initThreeJS() {
+      const container = document.getElementById("webgl-container");
+      const mainCanvas = document.getElementById("main-canvas");
+      const eoirCanvas = document.getElementById("eoir-canvas");
+
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x04080d);
+      scene.fog = new THREE.FogExp2(0x04080d, 0.00018);
+
+      mainCamera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 2, 15000);
+      gimbalCamera = new THREE.PerspectiveCamera(22, eoirCanvas.clientWidth / eoirCanvas.clientHeight, 5, 10000);
+
+      mainRenderer = new THREE.WebGLRenderer({ canvas: mainCanvas, antialias: true });
+      mainRenderer.setSize(container.clientWidth, container.clientHeight);
+      mainRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+      const eoirWrap = document.getElementById("eoir-viewport-wrap");
+      gimbalRenderer = new THREE.WebGLRenderer({ canvas: eoirCanvas, antialias: true });
+      gimbalRenderer.setSize(eoirWrap.clientWidth, eoirWrap.clientHeight);
+
+      // Lighting
+      scene.add(new THREE.AmbientLight(0x88aacc, 0.85));
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.1);
+      dirLight.position.set(800, 2000, 600);
+      scene.add(dirLight);
+
+      // Tactical Ground Grid & Terrain Reference at Altitude = 0m
+      const grid = new THREE.GridHelper(4800, 48, 0x1e3f5a, 0x0d1b28);
+      grid.position.set(0, 0, -1200);
+      scene.add(grid);
+
+      // Build Ownship UAV 3D Model
+      uavGroup = buildAircraftMesh(0x10B981, 1.3);
+      scene.add(uavGroup);
+
+      // Build Target Aircraft 3D Model
+      targetGroup = buildAircraftMesh(0xEF4444, 1.5);
+      scene.add(targetGroup);
+
+      // 3D EO/IR Camera FOV Frustum Cone attached between UAV and Target
+      const coneGeom = new THREE.ConeGeometry(120, 1, 16, 1, true);
+      coneGeom.translate(0, -0.5, 0);
+      coneGeom.rotateX(Math.PI / 2);
+      const coneMat = new THREE.MeshBasicMaterial({ color: 0x38BDF8, wireframe: true, transparent: true, opacity: 0.22 });
+      fovConeMesh = new THREE.Mesh(coneGeom, coneMat);
+      scene.add(fovConeMesh);
+
+      // 3D Covariance Uncertainty Ellipsoid around Active EKF Estimate
+      const ellGeom = new THREE.SphereGeometry(1, 18, 14);
+      const ellMat = new THREE.MeshBasicMaterial({ color: 0x10B981, wireframe: true, transparent: true, opacity: 0.45 });
+      covEllipsoidMesh = new THREE.Mesh(ellGeom, ellMat);
+      scene.add(covEllipsoidMesh);
+
+      // Line of Sight (LOS) Vector
+      const losGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+      losLine = new THREE.Line(losGeom, new THREE.LineDashedMaterial({ color: 0x38BDF8, dashSize: 25, gapSize: 15, transparent: true, opacity: 0.55 }));
+      scene.add(losLine);
+
+      // Mouse Orbit & Pan Controls on Main Canvas
+      mainCanvas.addEventListener("mousedown", (e) => {
+        orbitState.isDragging = true;
+        orbitState.isPan = (e.button === 2);
+        orbitState.prevX = e.clientX;
+        orbitState.prevY = e.clientY;
+      });
+      window.addEventListener("mouseup", () => { orbitState.isDragging = false; });
+      window.addEventListener("mousemove", (e) => {
+        if (!orbitState.isDragging || cameraMode !== "ORBIT") return;
+        const dx = e.clientX - orbitState.prevX;
+        const dy = e.clientY - orbitState.prevY;
+        orbitState.prevX = e.clientX;
+        orbitState.prevY = e.clientY;
+        if (!orbitState.isPan) {
+          orbitState.theta -= dx * 0.006;
+          orbitState.phi = Math.max(0.1, Math.min(Math.PI * 0.48, orbitState.phi - dy * 0.006));
+        } else {
+          orbitState.target.x -= dx * 1.5;
+          orbitState.target.y += dy * 1.5;
+        }
+      });
+      mainCanvas.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        orbitState.radius = Math.max(250, Math.min(6000, orbitState.radius + e.deltaY * 1.1));
+      }, { passive: false });
+      mainCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+      window.addEventListener("resize", () => {
+        mainCamera.aspect = container.clientWidth / container.clientHeight;
+        mainCamera.updateProjectionMatrix();
+        mainRenderer.setSize(container.clientWidth, container.clientHeight);
+        gimbalCamera.aspect = eoirWrap.clientWidth / eoirWrap.clientHeight;
+        gimbalCamera.updateProjectionMatrix();
+        gimbalRenderer.setSize(eoirWrap.clientWidth, eoirWrap.clientHeight);
+      });
+    }
+
+    function buildAircraftMesh(hexColor, scale) {
+      const group = new THREE.Group();
+      // Fuselage aligned with +Z/-Z
+      const bodyGeom = new THREE.ConeGeometry(8 * scale, 48 * scale, 8);
+      bodyGeom.rotateX(Math.PI / 2);
+      const bodyMat = new THREE.MeshPhongMaterial({ color: hexColor, emissive: hexColor, emissiveIntensity: 0.28, flatShading: true });
+      group.add(new THREE.Mesh(bodyGeom, bodyMat));
+
+      // Swept Delta Wings
+      const wingGeom = new THREE.BoxGeometry(64 * scale, 1.8 * scale, 16 * scale);
+      const wingMat = new THREE.MeshPhongMaterial({ color: 0xdce8f2, emissive: hexColor, emissiveIntensity: 0.18 });
+      const wing = new THREE.Mesh(wingGeom, wingMat);
+      wing.position.set(0, 0, -4 * scale);
+      group.add(wing);
+
+      // Vertical Stabilizer Tail
+      const tailGeom = new THREE.BoxGeometry(2.0 * scale, 14 * scale, 12 * scale);
+      const tail = new THREE.Mesh(tailGeom, bodyMat);
+      tail.position.set(0, 7 * scale, -15 * scale);
+      group.add(tail);
+      return group;
+    }
+
+    function rebuildTrajectoryLines() {
+      if (!simData) return;
+      Object.values(trackLines).forEach((l) => scene.remove(l));
+      trackLines = {};
+
+      const specs = {
+        GT: { color: 0xFFFFFF, width: 2.0 },
+        MODE_A: { color: 0x38BDF8, width: 1.5 },
+        MODE_B: { color: 0xEF4444, width: 1.6 },
+        MODE_C: { color: 0x10B981, width: 2.4 },
+        MODE_D: { color: 0xA855F7, width: 1.8 },
+        MODE_E: { color: 0xF59E0B, width: 1.6 },
+        UAV: { color: 0x34D399, width: 1.4 }
+      };
+
+      for (const [key, cfg] of Object.entries(specs)) {
+        const geom = new THREE.BufferGeometry();
+        const positions = new Float32Array(simData.timeline.length * 3);
+        geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geom.setDrawRange(0, 1);
+        const mat = new THREE.LineBasicMaterial({ color: cfg.color, linewidth: cfg.width });
+        const line = new THREE.Line(geom, mat);
+        scene.add(line);
+        trackLines[key] = line;
+      }
+
+      simData.timeline.forEach((f, i) => {
+        const pGT = nedToThree(f.gt.pos);
+        const pUAV = nedToThree(f.uav.pos);
+        setPoint(trackLines.GT, i, pGT);
+        setPoint(trackLines.UAV, i, pUAV);
+        ["MODE_A", "MODE_B", "MODE_C", "MODE_D", "MODE_E"].forEach((m) => {
+          setPoint(trackLines[m], i, nedToThree(f.modes[m].pos));
+        });
+      });
+    }
+
+    function setPoint(line, idx, vec3) {
+      const arr = line.geometry.attributes.position.array;
+      arr[idx * 3] = vec3.x;
+      arr[idx * 3 + 1] = vec3.y;
+      arr[idx * 3 + 2] = vec3.z;
+      line.geometry.attributes.position.needsUpdate = true;
+    }
+
+    function updateFrameVisuals() {
+      if (!simData || !simData.timeline.length) return;
+      const f = simData.timeline[frameIndex];
+      const mData = f.modes[activeMode];
+
+      const uavPos3 = nedToThree(f.uav.pos);
+      const gtPos3 = nedToThree(f.gt.pos);
+      const ekfPos3 = nedToThree(mData.pos);
+
+      uavGroup.position.copy(uavPos3);
+      uavGroup.rotation.set(f.uav.euler[1], -f.uav.euler[2], -f.uav.euler[0], "YXZ");
+
+      targetGroup.position.copy(gtPos3);
+      targetGroup.rotation.set(f.gt.euler[1], -f.gt.euler[2], -f.gt.euler[0], "YXZ");
+
+      // Position covariance ellipsoid (scaled 3-sigma for clear 3D visibility)
+      covEllipsoidMesh.position.copy(ekfPos3);
+      covEllipsoidMesh.scale.set(
+        Math.max(8, mData.std[1] * 3.0),
+        Math.max(8, mData.std[2] * 3.0),
+        Math.max(8, mData.std[0] * 3.0)
+      );
+
+      // Update FOV Cone & LOS line from UAV to Target
+      const dist = uavPos3.distanceTo(gtPos3);
+      fovConeMesh.position.copy(uavPos3);
+      fovConeMesh.lookAt(gtPos3);
+      fovConeMesh.scale.set(1, 1, dist);
+
+      const losArr = losLine.geometry.attributes.position.array;
+      losArr[0] = uavPos3.x; losArr[1] = uavPos3.y; losArr[2] = uavPos3.z;
+      losArr[3] = ekfPos3.x; losArr[4] = ekfPos3.y; losArr[5] = ekfPos3.z;
+      losLine.geometry.attributes.position.needsUpdate = true;
+      losLine.computeLineDistances();
+
+      // Update trajectory draw ranges up to current frame
+      const count = frameIndex + 1;
+      const visMap = {
+        GT: document.getElementById("chk-gt").checked,
+        MODE_A: document.getElementById("chk-a").checked,
+        MODE_B: document.getElementById("chk-b").checked,
+        MODE_C: document.getElementById("chk-c").checked,
+        MODE_D: document.getElementById("chk-d").checked,
+        MODE_E: document.getElementById("chk-e").checked,
+        UAV: true
+      };
+      for (const [k, line] of Object.entries(trackLines)) {
+        line.visible = visMap[k];
+        line.geometry.setDrawRange(0, count);
+      }
+
+      // Position Gimbal EO/IR Camera on UAV nose looking at target (with subtle latency jitter effect)
+      gimbalCamera.position.copy(uavPos3).add(new THREE.Vector3(0, 4, 0));
+      gimbalCamera.lookAt(gtPos3);
+
+      // Update Main Camera according to selected Camera Mode
+      if (cameraMode === "ORBIT") {
+        const cx = orbitState.target.x + orbitState.radius * Math.sin(orbitState.phi) * Math.sin(orbitState.theta);
+        const cy = Math.max(30, orbitState.target.y + orbitState.radius * Math.cos(orbitState.phi));
+        const cz = orbitState.target.z + orbitState.radius * Math.sin(orbitState.phi) * Math.cos(orbitState.theta);
+        mainCamera.position.set(cx, cy, cz);
+        mainCamera.lookAt(orbitState.target);
+      } else if (cameraMode === "UAV_CHASE") {
+        mainCamera.position.copy(uavPos3).add(new THREE.Vector3(-180, 95, 220));
+        mainCamera.lookAt(gtPos3);
+      } else if (cameraMode === "TARGET_CAM") {
+        mainCamera.position.copy(gtPos3).add(new THREE.Vector3(140, 75, 190));
+        mainCamera.lookAt(gtPos3);
+      } else if (cameraMode === "TOP_RADAR") {
+        mainCamera.position.set(gtPos3.x, 2600, gtPos3.z);
+        mainCamera.lookAt(gtPos3);
+      }
+
+      // Update Top & Right HUD Telemetry Labels
+      document.getElementById("badge-epoch").textContent = `EPOCH: T+${f.t.toFixed(2)}s`;
+      document.getElementById("lbl-curr-time").textContent = `T+${f.t.toFixed(2)}s`;
+      document.getElementById("time-slider").value = frameIndex;
+      document.getElementById("badge-mode").textContent = `AKTİF: ${activeMode.replace('_', ' ')}`;
+      document.getElementById("badge-oosm").textContent = `PKT: #${String(f.seq).padStart(4, '0')} | OOSM: ${simData.metrics[activeMode].oosm_count}`;
+
+      document.getElementById("val-pos-err").textContent = `${mData.pos_err.toFixed(2)} m`;
+      document.getElementById("val-ospa").textContent = `${mData.ospa.toFixed(2)} m`;
+      document.getElementById("val-nees").textContent = `${mData.nees.toFixed(1)} / ${mData.nis.toFixed(1)}`;
+      const spd = Math.hypot(mData.vel[0], mData.vel[1], mData.vel[2]);
+      document.getElementById("val-kin").textContent = `${spd.toFixed(1)}m/s | ${(-mData.pos[2]).toFixed(0)}m`;
+
+      const r2d = (r) => (r * 180 / Math.PI).toFixed(0);
+      document.getElementById("val-uav-att").textContent = `${r2d(f.uav.euler[0])}°/${r2d(f.uav.euler[1])}°/${r2d(f.uav.euler[2])}°`;
+      document.getElementById("val-tgt-att").textContent = `${r2d(f.gt.euler[0])}°/${r2d(f.gt.euler[1])}°/${r2d(f.gt.euler[2])}°`;
+
+      document.getElementById("eoir-top-right").textContent = `${f.sensor} GECİKME: ${f.latency_ms.toFixed(1)} ms`;
+      document.getElementById("eoir-bot-left").textContent = `AZ: ${f.raw_az_deg >= 0 ? '+' : ''}${f.raw_az_deg.toFixed(2)}° | EL: ${f.raw_el_deg.toFixed(2)}°`;
+      document.getElementById("eoir-bot-right").textContent = `MENZİL: ${dist.toFixed(1)} m`;
+
+      const banner = document.getElementById("oosm-banner");
+      const reticle = document.getElementById("eoir-reticle");
+      if (mData.is_oosm) {
+        banner.textContent = `[UYARI: ${activeMode} OOSM TELAFİ AKTİF] GECİKMELİ PAKET (${f.latency_ms.toFixed(1)}ms) DÜZELTİLDİ`;
+        banner.style.background = "#D97706";
+        banner.style.color = "#05080C";
+        reticle.style.borderColor = "#F59E0B";
+      } else {
+        banner.textContent = "OOSM TAMPON DURUMU: [NOMİNAL] // KRONOLOJİK ÖLÇÜM AKIŞI SENKRON";
+        banner.style.background = "#091210";
+        banner.style.color = "#34D399";
+        reticle.style.borderColor = "rgba(16, 185, 129, 0.7)";
+      }
+    }
+
+    function populateMetricsTable() {
+      if (!simData) return;
+      const m = simData.metrics;
+      const rows = [
+        ["Kalıcı 3B RMSE (m)", "ss_pos_rmse"],
+        ["Toplam 3B RMSE (m)", "total_pos_rmse"],
+        ["Kalıcı 3B MAE (m)", "ss_pos_mae"],
+        ["OSPA Skoru (m)", "ss_ospa"],
+        ["3B Hız RMSE (m/s)", "ss_vel_rmse"],
+        ["Ort. NEES (~6.0)", "ss_nees"],
+        ["NEES %95 Uyum (%)", "nees_consistency_pct"],
+        ["Ort. NIS", "ss_nis"],
+        ["İz Sürekliliği (%)", "track_continuity_pct"],
+        ["IDF1 Skoru", "idf1_score"],
+        ["OOSM Sayısı", "oosm_count"],
+        ["Süre (us/pkt)", "exec_us_per_pkt"]
+      ];
+      const tbody = document.getElementById("metrics-tbody");
+      tbody.innerHTML = rows.map(([label, key]) => `
+        <tr>
+          <td style="font-weight:bold; color:#C0D8E6;">${label}</td>
+          <td style="color:#38BDF8;">${m.MODE_A[key]}</td>
+          <td style="color:#EF4444;">${m.MODE_B[key]}</td>
+          <td style="color:#10B981; font-weight:bold;">${m.MODE_C[key]}</td>
+          <td style="color:#A855F7;">${m.MODE_D[key]}</td>
+          <td style="color:#F59E0B;">${m.MODE_E[key]}</td>
+        </tr>
+      `).join("");
+    }
+
+    async function reloadScenario() {
+      const scen = document.getElementById("sel-scenario").value;
+      const uavDyn = document.getElementById("chk-uav-dyn").checked ? "1" : "0";
+      const scenNames = { CV: "SABİT HIZ [CV]", CT: "KOORDİNELİ VİRAJ [CT]", EVASIVE: "KAÇINMA [S-WEAVE]" };
+      document.getElementById("badge-scen").textContent = `SENARYO: ${scenNames[scen]}`;
+
+      const res = await fetch(`/api/simulation?scenario=${scen}&uav_dynamic=${uavDyn}`);
+      simData = await res.json();
+      document.getElementById("time-slider").max = simData.timeline.length - 1;
+      document.getElementById("lbl-total-time").textContent = `T+${simData.duration.toFixed(2)}s`;
+      frameIndex = 0;
+      rebuildTrajectoryLines();
+      populateMetricsTable();
+      updateFrameVisuals();
+    }
+
+    function togglePlay() {
+      isPlaying = !isPlaying;
+      document.getElementById("btn-play").textContent = isPlaying ? "[ || ] DURAKLAT" : "[ > ] OYNAT";
+    }
+
+    function resetSim() {
+      frameIndex = 0;
+      updateFrameVisuals();
+    }
+
+    function onSliderScrub(val) {
+      frameIndex = parseInt(val, 10);
+      updateFrameVisuals();
+    }
+
+    function setCameraMode(mode) {
+      cameraMode = mode;
+      updateFrameVisuals();
+    }
+
+    function cycleFlirMode() {
+      flirModeIndex = (flirModeIndex + 1) % 3;
+      const wrap = document.getElementById("eoir-viewport-wrap");
+      const btn = document.getElementById("btn-flir-mode");
+      if (flirModeIndex === 0) {
+        wrap.style.filter = "sepia(100%) hue-rotate(85deg) saturate(230%) contrast(115%)";
+        btn.textContent = "MOD: TERMAL-YEŞİL";
+      } else if (flirModeIndex === 1) {
+        wrap.style.filter = "grayscale(100%) contrast(150%) brightness(115%)";
+        btn.textContent = "MOD: WHOT (BEYAZ)";
+      } else {
+        wrap.style.filter = "none";
+        btn.textContent = "MOD: EO-OPTİK";
+      }
+    }
+
+    function downloadCSV() {
+      const scen = document.getElementById("sel-scenario").value;
+      window.location.href = `/api/export_csv?scenario=${scen}&mode=${activeMode}`;
+    }
+
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = (now - lastTimestamp) / 1000.0;
+      lastTimestamp = now;
+
+      if (isPlaying && simData && simData.timeline.length > 0) {
+        // ~40 packets per simulated second
+        const stepAdvance = Math.max(1, Math.round(dt * 40.0 * speedMult));
+        if (now % 2 < 1.8) {
+          frameIndex += stepAdvance;
+          if (frameIndex >= simData.timeline.length) {
+            frameIndex = 0;
+          }
+          updateFrameVisuals();
+        }
+      }
+
+      if (mainRenderer && scene && mainCamera) {
+        mainRenderer.render(scene, mainCamera);
+      }
+      if (gimbalRenderer && scene && gimbalCamera) {
+        gimbalRenderer.render(scene, gimbalCamera);
+      }
+    }
+
+    window.addEventListener("DOMContentLoaded", async () => {
+      initThreeJS();
+      cycleFlirMode(); // Initialize FLIR shader look
+      await reloadScenario();
+      requestAnimationFrame(animate);
+    });
+  </script>
+</body>
+</html>

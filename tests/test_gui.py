@@ -72,6 +72,36 @@ class TestTacticalRadarGUI(unittest.TestCase):
         self.app.processEvents()
         self.assertAlmostEqual(window.worker.current_time, 1.0)
 
+        # Test scenario switching (RK4 Coordinated Turn and Evasive Weave)
+        window.worker.set_scenario("CT", uav_dynamic=True)
+        self.assertEqual(window.worker.scenario_type, "CT")
+        self.assertTrue(window.worker.uav_motion_enabled)
+        self.assertGreater(len(window.worker._mode_frames["MODE_C"]), 20)
+
+        # Test One-Click Three.js 3D Simulator Server launch & endpoints
+        import json
+        import urllib.request
+
+        sim_url = window.launch_3d_simulator(open_browser=False)
+        self.assertTrue(sim_url.startswith("http://127.0.0.1:"))
+
+        with urllib.request.urlopen(sim_url) as resp_html:
+            html_body = resp_html.read().decode("utf-8")
+            self.assertEqual(resp_html.status, 200)
+            self.assertIn("THREE.JS", html_body)
+
+        with urllib.request.urlopen(f"{sim_url}api/simulation?scenario=CT&uav_dynamic=1") as resp_json:
+            payload = json.loads(resp_json.read().decode("utf-8"))
+            self.assertEqual(payload["scenario"], "CT")
+            self.assertIn("MODE_A", payload["metrics"])
+            self.assertIn("MODE_E", payload["metrics"])
+            self.assertGreater(len(payload["timeline"]), 20)
+
+        with urllib.request.urlopen(f"{sim_url}api/export_csv?scenario=EVASIVE&mode=MODE_C") as resp_csv:
+            csv_text = resp_csv.read().decode("utf-8")
+            self.assertIn("pos_error_3d_m,vel_error_3d_ms,ospa_m,nees,nis", csv_text)
+
+        window.sim3d_server.stop()
         window.close()
 
 

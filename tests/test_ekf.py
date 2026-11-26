@@ -286,6 +286,61 @@ class TestEKFSystem(unittest.TestCase):
         self.assertGreater(tc["idf1_score"], 0.5)
         self.assertLess(tc["idf1_score"], 1.0)
 
+    def test_rk4_and_6dof_maneuver_trajectories(self):
+        """Verify 3-2-1 Euler DCM orthogonality, RK4 integration, Coordinated Turn, and Evasive Weave."""
+        from src.dynamics import (
+            euler_to_dcm,
+            rk4_step,
+            CoordinatedTurnTrajectory,
+            EvasiveWeaveTrajectory,
+            UAVFlightTrajectory,
+            create_trajectory,
+        )
+
+        # 1. Euler DCM orthogonality: R^T * R == I_3 and det(R) == +1
+        R = euler_to_dcm(roll=0.25, pitch=-0.15, yaw=1.10)
+        self.assertEqual(R.shape, (3, 3))
+        np.testing.assert_allclose(R.T @ R, np.eye(3), atol=1e-12)
+        self.assertAlmostEqual(float(np.linalg.det(R)), 1.0, places=12)
+
+        # 2. RK4 on simple harmonic oscillator dx/dt = v, dv/dt = -x
+        def sho_deriv(_t: float, y: np.ndarray) -> np.ndarray:
+            return np.array([y[1], -y[0]], dtype=np.float64)
+
+        y = np.array([1.0, 0.0], dtype=np.float64)
+        for i in range(100):
+            y = rk4_step(sho_deriv, i * 0.01, y, 0.01)
+        np.testing.assert_allclose(y, np.array([np.cos(1.0), -np.sin(1.0)]), atol=1e-6)
+
+        # 3. Coordinated Turn (CT) preserves horizontal speed magnitude under constant turn rate
+        init_state = TargetState(x=1000.0, vx=40.0, y=-500.0, vy=0.0, z=-400.0, vz=-2.0)
+        ct_traj = CoordinatedTurnTrajectory(init_state, turn_rate_rad_s=0.08, t0=0.0)
+        st_0 = ct_traj.get_state(0.0)
+        st_10 = ct_traj.get_state(10.0)
+        self.assertAlmostEqual(st_0.x, 1000.0, places=6)
+        speed_horiz_0 = np.hypot(st_0.vx, st_0.vy)
+        speed_horiz_10 = np.hypot(st_10.vx, st_10.vy)
+        self.assertAlmostEqual(speed_horiz_0, speed_horiz_10, places=4)
+        self.assertNotAlmostEqual(st_10.vy, 0.0)  # Velocity vector rotated
+
+        # 4. Evasive S-Weave trajectory and factory
+        ev_traj = create_trajectory("EVASIVE", init_state, t0=0.0)
+        self.assertIsInstance(ev_traj, EvasiveWeaveTrajectory)
+        st_ev = ev_traj.get_state(6.5)
+        self.assertEqual(st_ev.to_vector().shape, (6,))
+
+        # 5. Moving 6-DOF UAV flight trajectory
+        uav_traj = UAVFlightTrajectory(
+            initial_pos=np.array([0.0, 0.0, -150.0]),
+            cruise_speed=25.0,
+            orbit_radius=400.0,
+            dynamic_flight=True,
+        )
+        uav_pose = uav_traj.get_pose(5.0)
+        self.assertEqual(uav_pose.position.shape, (3,))
+        self.assertEqual(uav_pose.dcm_body_to_ned.shape, (3, 3))
+        np.testing.assert_allclose(uav_pose.dcm_body_to_ned.T @ uav_pose.dcm_body_to_ned, np.eye(3), atol=1e-12)
+
 
 if __name__ == "__main__":
     unittest.main()

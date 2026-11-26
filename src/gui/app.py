@@ -10,6 +10,7 @@ Main Window integrating 4 Primary Tactical Modules:
 from __future__ import annotations
 import os
 import sys
+import webbrowser
 
 # Ensure UTF-8 on Windows terminal
 if sys.platform == "win32":
@@ -51,6 +52,7 @@ from src.gui.views.live_radar_view import LiveRadarView
 from src.gui.views.benchmark_view import BenchmarkView
 from src.gui.views.test_runner_view import TestRunnerView
 from src.gui.views.config_view import ConfigView
+from src.sim3d.server import Sim3DBridgeServer
 
 
 class TacticalRadarApp(QMainWindow):
@@ -67,8 +69,9 @@ class TacticalRadarApp(QMainWindow):
         # Apply Global Dark Military QSS Theme
         self._apply_dark_theme()
 
-        # Shared Simulation Worker Engine
+        # Shared Simulation Worker Engine & 3D Three.js Simulation Bridge Server
         self.worker = SimulationWorker(sim_duration=sim_duration, seed=seed, parent=self)
+        self.sim3d_server = Sim3DBridgeServer(worker=self.worker)
 
         # Build Main View Hierarchy
         self._setup_ui()
@@ -124,6 +127,26 @@ class TacticalRadarApp(QMainWindow):
         self.lbl_top_mode = self._create_top_badge(ts_layout, "MOD: MOD C [OOSM ROLLBACK]", "#38BDF8")
         self.lbl_top_sensors = self._create_top_badge(ts_layout, "SENSÖR HATTI: RADAR 10Hz | EO/IR 30Hz", "#9FB6C8")
         self.lbl_top_pkt = self._create_top_badge(ts_layout, "PKT: #0000 | OOSM: 000", "#F59E0B")
+
+        self.btn_top_sim3d = QPushButton("[ 3B UÇUŞ & EO/IR SİMÜLATÖRÜ ]")
+        self.btn_top_sim3d.setStyleSheet("""
+            QPushButton {
+                background-color: #16102B;
+                color: #C084FC;
+                border: 1px solid #A855F7;
+                border-left: 3px solid #A855F7;
+                padding: 3px 10px;
+                font-family: 'Consolas', monospace;
+                font-size: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2A1B4E;
+                color: #FFFFFF;
+            }
+        """)
+        self.btn_top_sim3d.clicked.connect(lambda: self.launch_3d_simulator(open_browser=True))
+        ts_layout.addWidget(self.btn_top_sim3d)
 
         outer_layout.addWidget(top_strip)
 
@@ -231,6 +254,32 @@ class TacticalRadarApp(QMainWindow):
             """)
             self.nav_group.addButton(btn, page_idx)
             s_layout.addWidget(btn)
+
+        # Standalone Button for 3D Three.js Flight & Onboard EO/IR Gimbal Simulator
+        self.btn_nav_sim3d = QPushButton("[05] 3B SİMÜLATÖR [THREE.JS]")
+        self.btn_nav_sim3d.setFixedHeight(42)
+        self.btn_nav_sim3d.setStyleSheet("""
+            QPushButton {
+                background-color: #130F24;
+                color: #C084FC;
+                border: 1px solid #7E22CE;
+                border-left: 3px solid #A855F7;
+                text-align: left;
+                padding-left: 10px;
+                font-family: 'Consolas', monospace;
+                font-weight: bold;
+                font-size: 10px;
+                letter-spacing: 0.4px;
+            }
+            QPushButton:hover {
+                background-color: #231842;
+                color: #FFFFFF;
+                border: 1px solid #C084FC;
+                border-left: 4px solid #C084FC;
+            }
+        """)
+        self.btn_nav_sim3d.clicked.connect(lambda: self.launch_3d_simulator(open_browser=True))
+        s_layout.addWidget(self.btn_nav_sim3d)
 
         s_layout.addStretch()
 
@@ -372,13 +421,24 @@ class TacticalRadarApp(QMainWindow):
 
     def _on_parameters_applied(self) -> None:
         """When user applies custom parameters, switch back to Tab 0 and play."""
+        self.sim3d_server.invalidate_cache()
         self.nav_group.buttons()[0].setChecked(True)
         self.stacked_widget.setCurrentIndex(0)
         self.lbl_top_sensors.setText(
-            f"SENSÖR HATTI: RADAR {self.worker.radar_freq_hz:.0f}Hz | EO/IR {self.worker.cam_freq_hz:.0f}Hz"
+            f"SENSÖR HATTI: RADAR {self.worker.radar_freq_hz:.0f}Hz | EO/IR {self.worker.cam_freq_hz:.0f}Hz [{self.worker.scenario_type}]"
         )
-        self.status_bar.showMessage("DURUM: [GÜNCELLENDİ] // Yeni sensör ve EKF parametreleriyle canlı sentetik veri akışı başlatıldı.")
+        self.status_bar.showMessage("DURUM: [GÜNCELLENDİ] // Yeni sensör, RK4 manevra ve EKF parametreleriyle canlı sentetik veri akışı başlatıldı.")
         self.worker.play()
+
+    def launch_3d_simulator(self, open_browser: bool = True) -> str:
+        """Starts the background Three.js 3D Tactical Flight & EO/IR Gimbal Server and opens it in browser."""
+        url = self.sim3d_server.start()
+        self.status_bar.showMessage(
+            f"3B UÇUŞ & EO/IR SİMÜLATÖRÜ [AKTİF] -> {url} (Senaryo: {self.worker.scenario_type} | 5 Modlu Canlı Telemetri & CSV)"
+        )
+        if open_browser and os.environ.get("QT_QPA_PLATFORM") != "offscreen":
+            webbrowser.open(url)
+        return url
 
     def _on_worker_mode_changed(self, mode: str) -> None:
         mode_text_map = {

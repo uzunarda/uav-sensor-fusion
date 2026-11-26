@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QDoubleSpinBox,
     QSpinBox,
+    QComboBox,
     QFrame,
     QScrollArea,
 )
@@ -131,6 +132,41 @@ class ConfigView(QWidget):
 
         card_ekf.layout().addLayout(grid_ekf)
         form_layout.addWidget(card_ekf)
+
+        # --- Card 4: 6-DOF Flight & Target Maneuver Scenario Settings (RK4) ---
+        card_scen = self._create_card("[SENARYO-01] 6-DOF HEDEF MANEVRA VE İHA UÇUŞ DİNAMİĞİ (RK4 ÇÖZÜCÜ)", "#A855F7")
+        grid_scen = QGridLayout()
+        grid_scen.setSpacing(10)
+
+        lbl_man = QLabel("Hedef Uçuş / Manevra Profili (RK4):")
+        lbl_man.setStyleSheet("color: #7FA0B8; font-family: 'Consolas', monospace; font-size: 9px; font-weight: bold; border: none;")
+        self.combo_scenario = QComboBox()
+        self.combo_scenario.addItems([
+            "CV: SABİT HIZLI DOĞRUSAL UÇUŞ [STANDART]",
+            "CT: 3B KOORDİNELİ VİRAJ / HELİSEL DÖNÜŞ [RK4]",
+            "EVASIVE: YÜKSEK G KAÇINMA MANEVRASI [S-WEAVE / RK4]",
+        ])
+        self.combo_scenario.setStyleSheet("background-color: #0B121A; color: #38BDF8; border: 1px solid #1C2E40; padding: 4px 6px; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold;")
+        vbox_man = QVBoxLayout()
+        vbox_man.addWidget(lbl_man)
+        vbox_man.addWidget(self.combo_scenario)
+        grid_scen.addLayout(vbox_man, 0, 0)
+
+        lbl_uav_dyn = QLabel("İHA Platformu 6-DOF Uçuş Modu (Euler DCM):")
+        lbl_uav_dyn.setStyleSheet("color: #7FA0B8; font-family: 'Consolas', monospace; font-size: 9px; font-weight: bold; border: none;")
+        self.combo_uav_dyn = QComboBox()
+        self.combo_uav_dyn.addItems([
+            "SABİT İRTİFA NOKTASI [0, 0, -150m]",
+            "6-DOF HAREKETLİ DEVRİYE [ROLL / PITCH / YAW]",
+        ])
+        self.combo_uav_dyn.setStyleSheet("background-color: #0B121A; color: #10B981; border: 1px solid #1C2E40; padding: 4px 6px; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold;")
+        vbox_uav = QVBoxLayout()
+        vbox_uav.addWidget(lbl_uav_dyn)
+        vbox_uav.addWidget(self.combo_uav_dyn)
+        grid_scen.addLayout(vbox_uav, 0, 1)
+
+        card_scen.layout().addLayout(grid_scen)
+        form_layout.addWidget(card_scen)
         form_layout.addStretch(1)
 
         scroll.setWidget(container)
@@ -302,6 +338,8 @@ class ConfigView(QWidget):
 
         self.spin_qc.setValue(0.8)
         self.spin_buffer_size.setValue(150)
+        self.combo_scenario.setCurrentIndex(0)
+        self.combo_uav_dyn.setCurrentIndex(0)
         self.lbl_feedback.setText("[BİLGİ] Değerler fabrika varsayılanlarına döndürüldü.")
 
     def _apply_custom_parameters(self) -> None:
@@ -319,6 +357,9 @@ class ConfigView(QWidget):
 
         self.worker.q_continuous = float(self.spin_qc.value())
         self.worker.max_buffer_size = int(self.spin_buffer_size.value())
+        scen_map = ["CV", "CT", "EVASIVE"]
+        self.worker.scenario_type = scen_map[self.combo_scenario.currentIndex()]
+        self.worker.uav_motion_enabled = (self.combo_uav_dyn.currentIndex() == 1)
 
         self.lbl_feedback.setText("[İŞLENİYOR] Sentetik veriler ve EKF yörüngeleri yeniden hesaplanıyor...")
         self.worker.recompute_all_modes()

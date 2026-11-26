@@ -18,7 +18,7 @@ import numpy as np
 
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
-from src.dynamics import TargetState, ConstantVelocityTrajectory
+from src.dynamics import TargetState, ConstantVelocityTrajectory, UAVFlightTrajectory, create_trajectory
 from src.sensors import RadarSensor, CameraSensor, reconstruct_pseudo_cartesian
 from src.simulator import AsyncSensorEventSimulator
 from src.ekf import ExtendedKalmanFilter
@@ -91,10 +91,12 @@ class SimulationWorker(QObject):
         simulation_finished(): Emitted when timeline reaches the end.
     """
     ALL_MODES = ["MODE_A", "MODE_B", "MODE_C", "MODE_D", "MODE_E"]
+    ALL_SCENARIOS = ["CV", "CT", "EVASIVE"]
 
     frame_ready = pyqtSignal(object, object, object, object)  # frame, gt_history, ekf_history, raw_history
     playback_state_changed = pyqtSignal(bool)
     mode_changed = pyqtSignal(str)
+    scenario_changed = pyqtSignal(str)
     simulation_finished = pyqtSignal()
 
     def __init__(
@@ -139,6 +141,8 @@ class SimulationWorker(QObject):
 
         self.q_continuous: float = 0.8
         self.max_buffer_size: int = 150
+        self.scenario_type: str = "CV"
+        self.uav_motion_enabled: bool = False
 
         # Active state
         self.current_mode = "MODE_C"
@@ -169,7 +173,13 @@ class SimulationWorker(QObject):
     def _compute_mode_data(self, mode: str) -> None:
         """Runs the EKF engine for a specific mode and saves timeline frames and synthetic packets."""
         rng = np.random.default_rng(self.seed)
-        trajectory = ConstantVelocityTrajectory(self.true_initial_state, t0=0.0)
+        trajectory = create_trajectory(self.scenario_type, self.true_initial_state, t0=0.0)
+        uav_traj = UAVFlightTrajectory(
+            initial_pos=self.uav_pos,
+            cruise_speed=28.0,
+            orbit_radius=380.0,
+            dynamic_flight=self.uav_motion_enabled,
+        )
 
         if mode == "MODE_A":
             radar = RadarSensor(
@@ -230,12 +240,18 @@ class SimulationWorker(QObject):
         sim = AsyncSensorEventSimulator(trajectory)
         sim.register_sensor(radar, phase_offset=0.0)
         sim.register_sensor(camera, phase_offset=0.0125)
-        sim.populate_events(t_start=0.0, t_end=self.sim_duration, uav_position_fn=lambda t: self.uav_pos)
+        sim.populate_events(t_start=0.0, t_end=self.sim_duration, uav_position_fn=uav_traj.get_position)
+
+        q_eff = self.q_continuous
+        if self.scenario_type == "CT":
+            q_eff = max(q_eff, 3.5)
+        elif self.scenario_type == "EVASIVE":
+            q_eff = max(q_eff, 6.0)
 
         ekf = ExtendedKalmanFilter(
             initial_state=self.x_init_guess.copy(),
             initial_covariance=self.P_init.copy(),
-            process_noise_spectral_density=self.q_continuous,
+            process_noise_spectral_density=q_eff,
             enable_oosm_buffer=enable_oosm,
             max_buffer_size=self.max_buffer_size,
             oosm_strategy=strategy,
@@ -265,8 +281,9 @@ class SimulationWorker(QObject):
             # Evaluate ground truth at physical capture time (removing clock bias for camera if needed)
             bias_offset = self.cam_clock_bias_s if (event.sensor_type == "CAMERA" and mode != "MODE_A") else 0.0
             t_phys = max(0.0, event.t_capture - bias_offset)
+            uav_pos_cap = uav_traj.get_position(t_phys)
             gt_at_cap = trajectory.get_state(t_phys)
-            rel_cap = gt_at_cap.position - self.uav_pos
+            rel_cap = gt_at_cap.position - uav_pos_cap
             true_r_cap = float(np.linalg.norm(rel_cap))
 
             if event.sensor_type == "RADAR":
@@ -306,7 +323,7 @@ class SimulationWorker(QObject):
                     range_val=latest_radar_range,
                     azimuth_val=latest_cam_angles[0],
                     elevation_val=latest_cam_angles[1],
-                    uav_pos=self.uav_pos,
+                    uav_pos=uav_pos_cap,
                 )
 
             # Check if this incoming event triggers OOSM in Delay-Compensated modes
@@ -315,10 +332,11 @@ class SimulationWorker(QObject):
                 is_oosm_event = True
 
             t0_ns = time.perf_counter_ns()
-            ekf.update(event, uav_pos=self.uav_pos, is_naive=is_naive)
+            ekf.update(event, uav_pos=uav_pos_cap, is_naive=is_naive)
             step_us = (time.perf_counter_ns() - t0_ns) / 1000.0
 
             t_eval = event.t_receive if is_naive else ekf.current_time
+            uav_pos_eval = uav_traj.get_position(t_eval)
             gt_state = trajectory.get_state(t_eval)
             target_gt_pos = gt_state.position.copy()
             target_gt_vel = gt_state.velocity.copy()
@@ -333,7 +351,7 @@ class SimulationWorker(QObject):
 
             err_pos = float(np.linalg.norm(ekf_pos - target_gt_pos))
             err_vel = float(np.linalg.norm(ekf_vel - target_gt_vel))
-            range_to_target = float(np.linalg.norm(ekf_pos - self.uav_pos))
+            range_to_target = float(np.linalg.norm(ekf_pos - uav_pos_eval))
             altitude = float(-ekf_pos[2])  # -z is height in NED
 
             # Compute instant NEES & OSPA
@@ -386,7 +404,7 @@ class SimulationWorker(QObject):
                 sim_mode=mode,
                 target_gt_pos=target_gt_pos,
                 target_gt_vel=target_gt_vel,
-                uav_pos=self.uav_pos.copy(),
+                uav_pos=uav_pos_eval.copy(),
                 ekf_pos=ekf_pos,
                 ekf_vel=ekf_vel,
                 cov_2d=cov_2d,
@@ -472,6 +490,21 @@ class SimulationWorker(QObject):
         if mode in self.ALL_MODES and mode != self.current_mode:
             self.current_mode = mode
             self.mode_changed.emit(mode)
+            self._emit_current_frame()
+
+    def set_scenario(self, scenario: str, uav_dynamic: Optional[bool] = None) -> None:
+        """Switches active target flight maneuver scenario ('CV', 'CT', 'EVASIVE') and recomputes all 5 modes."""
+        scen = str(scenario).upper().strip()
+        if scen not in self.ALL_SCENARIOS:
+            return
+        changed = scen != self.scenario_type
+        self.scenario_type = scen
+        if uav_dynamic is not None:
+            changed = changed or (bool(uav_dynamic) != self.uav_motion_enabled)
+            self.uav_motion_enabled = bool(uav_dynamic)
+        if changed:
+            self.recompute_all_modes()
+            self.scenario_changed.emit(self.scenario_type)
             self._emit_current_frame()
 
     # -------------------------------------------------------------------------
