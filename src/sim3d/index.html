@@ -1108,6 +1108,47 @@
         ctx.lineWidth = 1;
         ctx.strokeRect(ox - 1, oy - 1, 11 * cell + 2, 11 * cell + 2);
       }
+
+      // 5. Render 1D Radar A-Scope (Matched Filter Range-Gate Echo Profile & CA-CFAR Threshold) in top-left inset
+      if (f.radar_dsp && f.radar_dsp.range_profile) {
+        const prof = f.radar_dsp.range_profile;
+        const cfarTh = f.radar_dsp.cfar_threshold;
+        const rw = 135, rh = 44;
+        const rx = 10, ry = 26;
+        ctx.fillStyle = "rgba(4, 9, 14, 0.85)";
+        ctx.fillRect(rx - 2, ry - 14, rw + 4, rh + 17);
+        ctx.fillStyle = "#10B981";
+        ctx.font = "bold 8.5px Consolas, monospace";
+        ctx.fillText(`RADAR A-SCOPE [SNR:${f.radar_dsp.snr_db}dB]`, rx, ry - 4);
+
+        const maxVal = Math.max(cfarTh * 1.4, ...prof, 1.0);
+        // CA-CFAR adaptive threshold horizontal line
+        const thY = ry + rh - Math.min(rh, (cfarTh / maxVal) * rh);
+        ctx.strokeStyle = "#F59E0B";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(rx, thY);
+        ctx.lineTo(rx + rw, thY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 1D Range-Gate Echo Waveform
+        ctx.strokeStyle = "#34D399";
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        for (let i = 0; i < prof.length; i++) {
+          const px = rx + (i / (prof.length - 1)) * rw;
+          const py = ry + rh - Math.min(rh, (prof[i] / maxVal) * rh);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+
+        ctx.strokeStyle = "#1E3A5F";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(rx - 1, ry - 1, rw + 2, rh + 2);
+      }
     }
 
     function animate(now) {

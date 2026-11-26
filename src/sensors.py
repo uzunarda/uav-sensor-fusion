@@ -36,6 +36,7 @@ class SensorMeasurement:
     t_receive: float = 0.0
     uav_pos: Optional[np.ndarray] = None
     cv_telemetry: Optional[Dict[str, Any]] = None
+    radar_telemetry: Optional[Dict[str, Any]] = None
 
     def __init__(
         self,
@@ -47,6 +48,7 @@ class SensorMeasurement:
         uav_pos: Optional[np.ndarray] = None,
         timestamp: Optional[float] = None,  # Backward compatibility for Phase 1
         cv_telemetry: Optional[Dict[str, Any]] = None,
+        radar_telemetry: Optional[Dict[str, Any]] = None,
     ) -> None:
         if t_capture is None:
             if timestamp is not None:
@@ -60,6 +62,7 @@ class SensorMeasurement:
         self.t_receive = float(t_receive) if t_receive is not None else self.t_capture
         self.uav_pos = np.asarray(uav_pos, dtype=np.float64) if uav_pos is not None else None
         self.cv_telemetry = cv_telemetry
+        self.radar_telemetry = radar_telemetry
 
     @property
     def timestamp(self) -> float:
@@ -147,6 +150,9 @@ class RadarSensor(BaseSensor):
         latency_jitter_std: float = 0.002,    # 2 ms Gaussian jitter
         clock_bias: float = 0.0,              # Radar synchronized with reference clock
         rng: Optional[np.random.Generator] = None,
+        enable_radar_dsp: bool = True,
+        gate_resolution_m: float = 7.5,       # 20 MHz pulse bandwidth -> dR = c / (2*B) = 7.5m
+        target_rcs_m2: float = 5.0,           # Nominal fighter target Radar Cross Section (m^2)
     ) -> None:
         """
         Args:
@@ -156,6 +162,11 @@ class RadarSensor(BaseSensor):
             latency_jitter_std: Gaussian jitter standard deviation in seconds (default: 0.002 s = 2 ms).
             clock_bias: Hardware clock offset in seconds (default: 0.0 s).
             rng: NumPy random generator instance for reproducibility.
+            enable_radar_dsp: When True, executes a physical 1D Matched-Filter Range-Gate synthesis
+                governed by the Radar Range Equation (P_r ~ RCS / R^4), applies 1D Cell-Averaging
+                CA-CFAR adaptive thresholding, and extracts sub-gate range via 3-point parabolic interpolation.
+            gate_resolution_m: Range bin spacing in meters (default: 7.5 m).
+            target_rcs_m2: Target Radar Cross Section in m^2 (default: 5.0 m^2).
         """
         super().__init__(
             frequency_hz=frequency_hz,
@@ -166,24 +177,107 @@ class RadarSensor(BaseSensor):
         )
         self.sigma_r = float(sigma_r)
         self.R_cov = np.array([[self.sigma_r**2]], dtype=np.float64)
+        self.enable_radar_dsp = bool(enable_radar_dsp)
+        self.gate_resolution_m = float(gate_resolution_m)
+        self.target_rcs_m2 = float(target_rcs_m2)
+        self._num_half_gates = 20
+        self._gate_offsets = np.arange(-self._num_half_gates, self._num_half_gates + 1, dtype=np.float64) * self.gate_resolution_m
+        self._dsp_rng = np.random.default_rng(209741)
 
     @property
     def sensor_type(self) -> str:
         return "RADAR"
 
+    def _run_radar_dsp_pipeline(
+        self,
+        true_range: float,
+        propagation_jitter_m: float,
+    ) -> Tuple[float, Dict[str, Any]]:
+        """
+        Executes a 1D Pulse-Compression / Matched-Filter & CA-CFAR Radar Signal Processing Pipeline:
+          1. Radar Range Equation: received echo power scales as P_r ~ (RCS / R^4), amplitude ~ sqrt(P_r) ~ 1/R^2.
+          2. Synthesizes 1D Range-Gate Echo Profile A(r_i) over 41 range bins (spacing dR = 7.5m)
+             combining the compressed pulse mainlobe and receiver thermal noise floor.
+          3. Applies 1D Cell-Averaging Constant False Alarm Rate (CA-CFAR) thresholding using outer training cells.
+          4. Detects peak range cell k* above CA-CFAR threshold and performs 3-point parabolic (quadratic)
+             sub-gate peak interpolation to extract continuous measured slant range R_meas.
+        """
+        dR = self.gate_resolution_m
+        # Anchor range window around nearest gate to true_range
+        r_center_gate = np.round(true_range / dR) * dR
+        r_gates = r_center_gate + self._gate_offsets
+
+        # Physical echo peak location including atmospheric/clock propagation jitter
+        r_echo_spot = max(10.0, true_range + propagation_jitter_m)
+
+        # 1. Radar Range Equation: SNR(R) = SNR_ref * (RCS / 5.0) * (R_ref / R)^4
+        r_ref = 1200.0
+        snr_ref_linear = 220.0  # ~23.4 dB at 1200m
+        r_clamped = max(true_range, 200.0)
+        snr_linear = snr_ref_linear * (self.target_rcs_m2 / 5.0) * ((r_ref / r_clamped) ** 4)
+        snr_linear = float(np.clip(snr_linear, 18.0, 2500.0))
+
+        # Receiver thermal noise statistics (normalized voltage amplitude units)
+        noise_mean = 12.0
+        noise_std = 2.4
+        peak_amplitude = noise_std * np.sqrt(snr_linear)
+
+        # 2. Matched-filter compressed pulse envelope + receiver thermal noise across 41 range gates
+        pulse_width_m = 0.62 * dR
+        echo_envelope = peak_amplitude * np.exp(-0.5 * ((r_gates - r_echo_spot) / pulse_width_m) ** 2)
+        thermal_noise = self._dsp_rng.normal(noise_mean, noise_std, size=r_gates.shape)
+        profile = np.clip(echo_envelope + thermal_noise, 0.5, 500.0)
+
+        # 3. 1D CA-CFAR (Cell-Averaging CFAR): estimate noise floor from outer 12 training cells on each side
+        training_cells = np.concatenate([profile[:12], profile[-12:]])
+        cfar_mu = float(np.mean(training_cells))
+        cfar_sigma = max(float(np.std(training_cells)), 0.5)
+        cfar_threshold = cfar_mu + 4.2 * cfar_sigma
+
+        # 4. Peak detection & 3-point parabolic sub-gate interpolation
+        above_cfar = np.where(profile > cfar_threshold)[0]
+        if len(above_cfar) > 0:
+            k_peak = int(above_cfar[np.argmax(profile[above_cfar])])
+        else:
+            k_peak = int(np.argmax(profile))
+
+        if 0 < k_peak < len(profile) - 1:
+            y_m1 = float(profile[k_peak - 1])
+            y_0 = float(profile[k_peak])
+            y_p1 = float(profile[k_peak + 1])
+            denom = y_m1 - 2.0 * y_0 + y_p1
+            if abs(denom) > 1e-9:
+                delta_bin = float(np.clip(0.5 * (y_m1 - y_p1) / denom, -0.5, 0.5))
+            else:
+                delta_bin = 0.0
+            meas_range = float(r_gates[k_peak] + delta_bin * dR)
+        else:
+            meas_range = float(r_gates[k_peak])
+
+        meas_range = max(0.1, meas_range)
+        peak_val = float(profile[k_peak])
+        measured_snr_db = float(20.0 * np.log10(max(peak_val - cfar_mu, 1.0) / cfar_sigma))
+
+        # Extract central 21 range gates for live A-Scope HUD display
+        mid = self._num_half_gates
+        sub_profile = profile[mid - 10 : mid + 11]
+        radar_info: Dict[str, Any] = {
+            "detected_range_m": round(meas_range, 2),
+            "true_range_m": round(true_range, 2),
+            "snr_db": round(measured_snr_db, 1),
+            "cfar_threshold": round(cfar_threshold, 1),
+            "peak_amplitude": round(peak_val, 1),
+            "gate_resolution_m": dR,
+            "rcs_m2": self.target_rcs_m2,
+            "range_profile": [round(float(v), 1) for v in sub_profile],
+        }
+        return meas_range, radar_info
+
     def measure(
         self, timestamp: float, target_pos: np.ndarray, uav_pos: Optional[np.ndarray] = None
     ) -> SensorMeasurement:
         """
-        Generate synthetic range reading with Gaussian noise, latency, and timing jitter.
-
-        Args:
-            timestamp: True physical epoch of observation (s).
-            target_pos: True 3D Cartesian position [x, y, z] of target (m).
-            uav_pos: 3D position [x, y, z] of the UAV platform (m), defaults to [0, 0, 0].
-
-        Returns:
-            SensorMeasurement with 1D range observation and arrival timestamp.
+        Generate synthetic range reading via 1D Pulse-Compression Radar DSP & CA-CFAR Peak Detection.
         """
         if uav_pos is None:
             uav_pos = np.zeros(3, dtype=np.float64)
@@ -191,8 +285,15 @@ class RadarSensor(BaseSensor):
         rel_pos = np.asarray(target_pos, dtype=np.float64) - np.asarray(uav_pos, dtype=np.float64)
         true_range = float(np.linalg.norm(rel_pos))
 
-        noise = self.rng.normal(0.0, self.sigma_r)
-        meas_range = max(0.1, true_range + noise)  # Avoid non-physical negative distance
+        noise = float(self.rng.normal(0.0, self.sigma_r))
+        radar_telemetry: Optional[Dict[str, Any]] = None
+        if self.enable_radar_dsp:
+            meas_range, radar_telemetry = self._run_radar_dsp_pipeline(
+                true_range=true_range,
+                propagation_jitter_m=noise,
+            )
+        else:
+            meas_range = max(0.1, true_range + noise)
 
         z = np.array([meas_range], dtype=np.float64)
         t_capture = float(timestamp + self.clock_bias)
@@ -205,6 +306,7 @@ class RadarSensor(BaseSensor):
             R_cov=self.R_cov.copy(),
             t_receive=t_receive,
             uav_pos=np.asarray(uav_pos, dtype=np.float64),
+            radar_telemetry=radar_telemetry,
         )
 
 

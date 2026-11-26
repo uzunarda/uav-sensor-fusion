@@ -375,6 +375,41 @@ class TestEKFSystem(unittest.TestCase):
         self.assertAlmostEqual(float(meas.z[0]), float(true_psi), delta=0.03)
         self.assertAlmostEqual(float(meas.z[1]), float(true_lam), delta=0.03)
 
+    def test_radar_cfar_dsp_pipeline(self):
+        """Verify 1D Radar Range Equation (1/R^4), matched-filter range profile, CA-CFAR thresholding, and parabolic peak interpolation."""
+        rng = np.random.default_rng(42)
+        radar = RadarSensor(
+            frequency_hz=10.0,
+            sigma_r=6.0,
+            latency_mean=0.008,
+            latency_jitter_std=0.002,
+            clock_bias=0.0,
+            rng=rng,
+            enable_radar_dsp=True,
+        )
+        uav_pos = np.array([0.0, 0.0, -150.0])
+        near_target = np.array([600.0, -300.0, -300.0])
+        far_target = np.array([1800.0, -900.0, -500.0])
+
+        m_near = radar.measure(timestamp=1.0, target_pos=near_target, uav_pos=uav_pos)
+        m_far = radar.measure(timestamp=2.0, target_pos=far_target, uav_pos=uav_pos)
+
+        self.assertIsNotNone(m_near.radar_telemetry)
+        self.assertIsNotNone(m_far.radar_telemetry)
+
+        rd_near = m_near.radar_telemetry
+        rd_far = m_far.radar_telemetry
+        self.assertIn("snr_db", rd_near)
+        self.assertIn("cfar_threshold", rd_near)
+        self.assertIn("range_profile", rd_near)
+        self.assertEqual(len(rd_near["range_profile"]), 21)
+
+        # By the Radar Range Equation (P_r ~ 1/R^4), near target must have higher SNR than far target
+        self.assertGreater(rd_near["snr_db"], rd_far["snr_db"])
+
+        true_r_near = float(np.linalg.norm(near_target - uav_pos))
+        self.assertAlmostEqual(float(m_near.z[0]), true_r_near, delta=25.0)
+
 
 if __name__ == "__main__":
     unittest.main()
