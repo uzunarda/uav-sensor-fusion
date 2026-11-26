@@ -190,11 +190,12 @@ class CoordinatedTurnTrajectory(ConstantVelocityTrajectory):
         initial_state: TargetState,
         turn_rate_rad_s: float = 0.065,
         t0: float = 0.0,
-        rk4_dt: float = 0.005,
+        rk4_dt: float = 0.01,
     ) -> None:
         super().__init__(initial_state, t0=t0)
         self.omega = float(turn_rate_rad_s)
         self.rk4_dt = float(rk4_dt)
+        self._y_cache: list[np.ndarray] = [self.initial_state.to_vector()]
 
     def _deriv(self, _t: float, state_vec: np.ndarray) -> np.ndarray:
         vx = state_vec[1]
@@ -212,19 +213,32 @@ class CoordinatedTurnTrajectory(ConstantVelocityTrajectory):
             dtype=np.float64,
         )
 
+    def _ensure_cache_up_to(self, target_idx: int) -> None:
+        curr_len = len(self._y_cache)
+        if target_idx < curr_len:
+            return
+        y = self._y_cache[-1].copy()
+        h = self.rk4_dt
+        for i in range(curr_len - 1, target_idx):
+            curr_t = self.t0 + i * h
+            y = rk4_step(self._deriv, curr_t, y, h)
+            self._y_cache.append(y.copy())
+
     def get_state(self, t: float) -> TargetState:
-        """Integrates CT differential equations from t0 to t using fixed-substep RK4."""
+        """Evaluates CT differential equations at time t in O(1) using cached RK4 grid + remainder RK4 step."""
         total_dt = float(t - self.t0)
         if abs(total_dt) < 1e-12:
             return TargetState.from_vector(self.initial_state.to_vector())
+        if total_dt < 0.0:
+            y = rk4_step(self._deriv, self.t0, self.initial_state.to_vector(), total_dt)
+            return TargetState.from_vector(y)
 
-        n_steps = max(1, int(np.ceil(abs(total_dt) / self.rk4_dt)))
-        h = total_dt / n_steps
-        y = self.initial_state.to_vector()
-        curr_t = self.t0
-        for _ in range(n_steps):
-            y = rk4_step(self._deriv, curr_t, y, h)
-            curr_t += h
+        idx = int(total_dt / self.rk4_dt)
+        self._ensure_cache_up_to(idx)
+        y = self._y_cache[idx]
+        rem = total_dt - idx * self.rk4_dt
+        if rem > 1e-12:
+            y = rk4_step(self._deriv, self.t0 + idx * self.rk4_dt, y, rem)
         return TargetState.from_vector(y)
 
 
@@ -245,7 +259,7 @@ class EvasiveWeaveTrajectory(ConstantVelocityTrajectory):
         weave_freq_hz: float = 0.11,
         vertical_accel_amp: float = 6.5,
         t0: float = 0.0,
-        rk4_dt: float = 0.005,
+        rk4_dt: float = 0.01,
     ) -> None:
         super().__init__(initial_state, t0=t0)
         self.lateral_accel_amp = float(lateral_accel_amp)
@@ -253,6 +267,7 @@ class EvasiveWeaveTrajectory(ConstantVelocityTrajectory):
         self.vertical_accel_amp = float(vertical_accel_amp)
         self.rk4_dt = float(rk4_dt)
         self.psi_0 = float(np.arctan2(initial_state.vy, initial_state.vx))
+        self._y_cache: list[np.ndarray] = [self.initial_state.to_vector()]
 
     def _deriv(self, t: float, state_vec: np.ndarray) -> np.ndarray:
         tau = t - self.t0
@@ -273,19 +288,32 @@ class EvasiveWeaveTrajectory(ConstantVelocityTrajectory):
             dtype=np.float64,
         )
 
+    def _ensure_cache_up_to(self, target_idx: int) -> None:
+        curr_len = len(self._y_cache)
+        if target_idx < curr_len:
+            return
+        y = self._y_cache[-1].copy()
+        h = self.rk4_dt
+        for i in range(curr_len - 1, target_idx):
+            curr_t = self.t0 + i * h
+            y = rk4_step(self._deriv, curr_t, y, h)
+            self._y_cache.append(y.copy())
+
     def get_state(self, t: float) -> TargetState:
-        """Integrates Evasive Weave dynamics from t0 to t using RK4."""
+        """Evaluates Evasive Weave dynamics at time t in O(1) using cached RK4 grid + remainder RK4 step."""
         total_dt = float(t - self.t0)
         if abs(total_dt) < 1e-12:
             return TargetState.from_vector(self.initial_state.to_vector())
+        if total_dt < 0.0:
+            y = rk4_step(self._deriv, self.t0, self.initial_state.to_vector(), total_dt)
+            return TargetState.from_vector(y)
 
-        n_steps = max(1, int(np.ceil(abs(total_dt) / self.rk4_dt)))
-        h = total_dt / n_steps
-        y = self.initial_state.to_vector()
-        curr_t = self.t0
-        for _ in range(n_steps):
-            y = rk4_step(self._deriv, curr_t, y, h)
-            curr_t += h
+        idx = int(total_dt / self.rk4_dt)
+        self._ensure_cache_up_to(idx)
+        y = self._y_cache[idx]
+        rem = total_dt - idx * self.rk4_dt
+        if rem > 1e-12:
+            y = rk4_step(self._deriv, self.t0 + idx * self.rk4_dt, y, rem)
         return TargetState.from_vector(y)
 
 
