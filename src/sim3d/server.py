@@ -72,8 +72,8 @@ class Sim3DBridgeServer:
         return {
             "sim_duration": 20.0,
             "seed": 42,
-            "scenario_type": "CV",
-            "uav_dynamic": False,
+            "scenario_type": "EVASIVE",
+            "uav_dynamic": True,
             "radar_freq_hz": 10.0,
             "radar_sigma_m": 6.0,
             "radar_latency_s": 0.008,
@@ -121,9 +121,9 @@ class Sim3DBridgeServer:
         # Use adapted process noise for maneuvering targets so EKF tracks CT/EVASIVE turns smoothly
         q_c = params["q_continuous"]
         if scen == "CT":
-            q_c = max(q_c, 3.5)
-        elif scen == "EVASIVE":
             q_c = max(q_c, 6.0)
+        elif scen == "EVASIVE":
+            q_c = max(q_c, 14.0)
 
         target_traj = create_trajectory(scen, true_init, t0=0.0)
         uav_traj = UAVFlightTrajectory(

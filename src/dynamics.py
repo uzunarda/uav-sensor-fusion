@@ -241,9 +241,9 @@ class EvasiveWeaveTrajectory(ConstantVelocityTrajectory):
     def __init__(
         self,
         initial_state: TargetState,
-        lateral_accel_amp: float = 8.5,
-        weave_freq_hz: float = 0.12,
-        vertical_accel_amp: float = 2.5,
+        lateral_accel_amp: float = 22.0,
+        weave_freq_hz: float = 0.11,
+        vertical_accel_amp: float = 6.5,
         t0: float = 0.0,
         rk4_dt: float = 0.005,
     ) -> None:
@@ -313,16 +313,16 @@ class UAVPlatformState:
 class UAVFlightTrajectory:
     """
     6-DOF Ownship UAV Flight Path Generator.
-    Supports both stationary hover reference (default for baseline benchmark parity)
-    and dynamic 6-DOF loiter/pursuit flight with coordinated banking (phi = atan(v * omega / g)).
+    Supports both stationary hover reference and dynamic 6-DOF pursuit/interception flight
+    with coordinated turn banking (phi = atan(v * omega / g)), pitch climb, and heading changes.
     """
 
     def __init__(
         self,
         initial_pos: np.ndarray,
-        cruise_speed: float = 25.0,
-        orbit_radius: float = 400.0,
-        dynamic_flight: bool = False,
+        cruise_speed: float = 42.0,
+        orbit_radius: float = 420.0,
+        dynamic_flight: bool = True,
     ) -> None:
         self.initial_pos = np.asarray(initial_pos, dtype=np.float64).flatten()
         self.cruise_speed = float(cruise_speed)
@@ -345,21 +345,27 @@ class UAVFlightTrajectory:
                 dcm_body_to_ned=dcm,
             )
 
-        # Smooth 3D figure-8 / loiter patrol with coordinated turn banking
-        angle = self.omega * float(t)
-        x = self.initial_pos[0] + self.orbit_radius * np.sin(angle)
-        y = self.initial_pos[1] + self.orbit_radius * (1.0 - np.cos(angle))
-        z = self.initial_pos[2] - 8.0 * np.sin(0.5 * angle)
+        # Dynamic 3D tactical pursuit & banking S-curve flight path
+        tau = float(t)
+        w = 0.18  # rad/s turn frequency
+        # Forward pursuit along North-East with sinusoidal banking weave & climb
+        x = self.initial_pos[0] + 34.0 * tau + 95.0 * np.sin(w * tau)
+        y = self.initial_pos[1] - 18.0 * tau + 130.0 * (1.0 - np.cos(w * tau))
+        z = self.initial_pos[2] - 4.5 * tau - 25.0 * np.sin(0.8 * w * tau)
 
-        vx = self.cruise_speed * np.cos(angle)
-        vy = self.cruise_speed * np.sin(angle)
-        vz = -4.0 * self.omega * np.cos(0.5 * angle)
+        vx = 34.0 + 95.0 * w * np.cos(w * tau)
+        vy = -18.0 + 130.0 * w * np.sin(w * tau)
+        vz = -4.5 - 25.0 * (0.8 * w) * np.cos(0.8 * w * tau)
+
+        ax = -95.0 * (w ** 2) * np.sin(w * tau)
+        ay = 130.0 * (w ** 2) * np.cos(w * tau)
 
         yaw = float(np.arctan2(vy, vx))
         horiz_v = max(float(np.hypot(vx, vy)), 1e-6)
         pitch = float(np.arctan2(-vz, horiz_v))
-        # Coordinated turn bank angle: phi = atan(v * omega / g)
-        roll = float(np.arctan((horiz_v * self.omega) / 9.80665))
+        # Lateral centripetal acceleration -> coordinated bank angle roll
+        a_lat = (-ax * np.sin(yaw) + ay * np.cos(yaw))
+        roll = float(np.clip(np.arctan(a_lat / 9.80665), -0.85, 0.85))
 
         dcm = euler_to_dcm(roll, pitch, yaw)
         return UAVPlatformState(
@@ -391,7 +397,13 @@ def create_trajectory(
     """
     key = str(scenario).upper().strip()
     if key in ("CT", "COORDINATED_TURN"):
-        return CoordinatedTurnTrajectory(initial_state, turn_rate_rad_s=0.065, t0=t0)
+        return CoordinatedTurnTrajectory(initial_state, turn_rate_rad_s=0.095, t0=t0)
     if key in ("EVASIVE", "S_WEAVE", "WEAVE"):
-        return EvasiveWeaveTrajectory(initial_state, lateral_accel_amp=8.5, weave_freq_hz=0.12, t0=t0)
+        return EvasiveWeaveTrajectory(
+            initial_state,
+            lateral_accel_amp=22.0,
+            weave_freq_hz=0.11,
+            vertical_accel_amp=6.5,
+            t0=t0,
+        )
     return ConstantVelocityTrajectory(initial_state, t0=t0)

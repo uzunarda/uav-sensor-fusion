@@ -165,7 +165,18 @@ class Trajectory3DDisplay(QWidget):
         )
         self.gl_widget.addItem(self.gl_ground_shadow)
 
-        # 8. 3D Ownship UAV Symbol (Cyan diamond/box)
+        # 8. 3D Ownship UAV Trail & Symbol (Cyan)
+        self.gl_uav_line = gl.GLLinePlotItem(
+            pos=np.zeros((1, 3)),
+            color=(0.0, 0.9, 1.0, 0.85),
+            width=2.2,
+            antialias=True,
+            mode="line_strip",
+        )
+        self.gl_widget.addItem(self.gl_uav_line)
+        self._uav_3d_hist: List[np.ndarray] = []
+        self._last_gl_ts: float = -1.0
+
         self.gl_uav_point = gl.GLScatterPlotItem(
             pos=np.array([[0.0, 0.0, 150.0]]),
             color=(0.0, 1.0, 1.0, 1.0),
@@ -321,7 +332,14 @@ class Trajectory3DDisplay(QWidget):
                     pts_ekf = np.column_stack([ekf_history[:, 1], ekf_history[:, 0], -ekf_history[:, 2]])
                     self.gl_ekf_line.setData(pos=pts_ekf)
 
-                # Update UAV and Target points
+                # Update UAV 3D Trail and Target points
+                if frame.timestamp <= 0.05 or frame.timestamp < self._last_gl_ts:
+                    self._uav_3d_hist = [uav_disp]
+                else:
+                    self._uav_3d_hist.append(uav_disp)
+                self._last_gl_ts = frame.timestamp
+                if len(self._uav_3d_hist) > 1:
+                    self.gl_uav_line.setData(pos=np.array(self._uav_3d_hist))
                 self.gl_uav_point.setData(pos=np.array([uav_disp]))
                 self.gl_tgt_point.setData(pos=np.array([tgt_disp]))
 

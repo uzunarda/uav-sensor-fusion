@@ -141,8 +141,8 @@ class SimulationWorker(QObject):
 
         self.q_continuous: float = 0.8
         self.max_buffer_size: int = 150
-        self.scenario_type: str = "CV"
-        self.uav_motion_enabled: bool = False
+        self.scenario_type: str = "EVASIVE"
+        self.uav_motion_enabled: bool = True
 
         # Active state
         self.current_mode = "MODE_C"
@@ -154,6 +154,7 @@ class SimulationWorker(QObject):
         self._mode_frames: Dict[str, List[SimulationFrame]] = {}
         self._mode_gt_tracks: Dict[str, np.ndarray] = {}
         self._mode_ekf_tracks: Dict[str, np.ndarray] = {}
+        self._mode_uav_tracks: Dict[str, np.ndarray] = {}
         self._mode_raw_points: Dict[str, List[tuple]] = {}
 
         # Precompute all 5 modes for instantaneous mode switching and scrubbing
@@ -244,9 +245,9 @@ class SimulationWorker(QObject):
 
         q_eff = self.q_continuous
         if self.scenario_type == "CT":
-            q_eff = max(q_eff, 3.5)
-        elif self.scenario_type == "EVASIVE":
             q_eff = max(q_eff, 6.0)
+        elif self.scenario_type == "EVASIVE":
+            q_eff = max(q_eff, 14.0)
 
         ekf = ExtendedKalmanFilter(
             initial_state=self.x_init_guess.copy(),
@@ -260,6 +261,7 @@ class SimulationWorker(QObject):
         frames: List[SimulationFrame] = []
         gt_track_list = []
         ekf_track_list = []
+        uav_track_list = []
         raw_points_list = []
         rolling_packets: List[SyntheticPacketRecord] = []
 
@@ -437,12 +439,14 @@ class SimulationWorker(QObject):
             frames.append(frame)
             gt_track_list.append(target_gt_pos)
             ekf_track_list.append(ekf_pos)
+            uav_track_list.append(uav_pos_eval.copy())
             if raw_pos is not None:
                 raw_points_list.append((t_eval, raw_pos))
 
         self._mode_frames[mode] = frames
         self._mode_gt_tracks[mode] = np.array(gt_track_list)
         self._mode_ekf_tracks[mode] = np.array(ekf_track_list)
+        self._mode_uav_tracks[mode] = np.array(uav_track_list)
         self._mode_raw_points[mode] = raw_points_list
 
     # -------------------------------------------------------------------------

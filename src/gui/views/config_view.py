@@ -146,6 +146,7 @@ class ConfigView(QWidget):
             "CT: 3B KOORDİNELİ VİRAJ / HELİSEL DÖNÜŞ [RK4]",
             "EVASIVE: YÜKSEK G KAÇINMA MANEVRASI [S-WEAVE / RK4]",
         ])
+        self.combo_scenario.setCurrentIndex(2)
         self.combo_scenario.setStyleSheet("background-color: #0B121A; color: #38BDF8; border: 1px solid #1C2E40; padding: 4px 6px; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold;")
         vbox_man = QVBoxLayout()
         vbox_man.addWidget(lbl_man)
@@ -159,6 +160,7 @@ class ConfigView(QWidget):
             "SABİT İRTİFA NOKTASI [0, 0, -150m]",
             "6-DOF HAREKETLİ DEVRİYE [ROLL / PITCH / YAW]",
         ])
+        self.combo_uav_dyn.setCurrentIndex(1)
         self.combo_uav_dyn.setStyleSheet("background-color: #0B121A; color: #10B981; border: 1px solid #1C2E40; padding: 4px 6px; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold;")
         vbox_uav = QVBoxLayout()
         vbox_uav.addWidget(lbl_uav_dyn)
@@ -338,8 +340,8 @@ class ConfigView(QWidget):
 
         self.spin_qc.setValue(0.8)
         self.spin_buffer_size.setValue(150)
-        self.combo_scenario.setCurrentIndex(0)
-        self.combo_uav_dyn.setCurrentIndex(0)
+        self.combo_scenario.setCurrentIndex(2)
+        self.combo_uav_dyn.setCurrentIndex(1)
         self.lbl_feedback.setText("[BİLGİ] Değerler fabrika varsayılanlarına döndürüldü.")
 
     def _apply_custom_parameters(self) -> None:

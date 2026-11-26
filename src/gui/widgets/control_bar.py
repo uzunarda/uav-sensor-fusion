@@ -40,6 +40,7 @@ class PlaybackControlBar(QWidget):
     seek_requested = pyqtSignal(float)  # target time in seconds
     speed_changed = pyqtSignal(float)   # multiplier: 0.5, 1.0, 2.0, 0.0
     mode_selected = pyqtSignal(str)     # "MODE_A", "MODE_B", "MODE_C", "MODE_D", "MODE_E"
+    scenario_selected = pyqtSignal(str) # "EVASIVE", "CT", "CV"
 
     def __init__(self, sim_duration: float = 20.0, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -194,6 +195,38 @@ class PlaybackControlBar(QWidget):
         self.combo_speed.currentIndexChanged.connect(self._on_speed_changed)
         toolbar_row.addWidget(self.combo_speed)
 
+        # Target Maneuver Scenario Selector
+        lbl_scen = QLabel("MANEVRA:")
+        lbl_scen.setStyleSheet("color: #C084FC; font-family: 'Consolas', monospace; font-size: 10px; font-weight: bold; border: none;")
+        toolbar_row.addWidget(lbl_scen)
+
+        self.combo_scenario = QComboBox()
+        self.combo_scenario.addItems([
+            "KAÇINMA [S-WEAVE + 6DOF İHA]",
+            "KOORDİNELİ VİRAJ [CT + 6DOF İHA]",
+            "SABİT HIZ [CV - DOĞRUSAL]",
+        ])
+        self.combo_scenario.setCurrentIndex(0)  # Default Evasive Maneuver + Moving UAV
+        self.combo_scenario.setStyleSheet("""
+            QComboBox {
+                background-color: #130F24;
+                color: #C084FC;
+                border: 1px solid #7E22CE;
+                padding: 4px 8px;
+                font-family: 'Consolas', monospace;
+                font-weight: bold;
+                font-size: 10px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #130F24;
+                color: #C084FC;
+                selection-background-color: #2A1B4E;
+                border: 1px solid #7E22CE;
+            }
+        """)
+        self.combo_scenario.currentIndexChanged.connect(self._on_scenario_changed)
+        toolbar_row.addWidget(self.combo_scenario)
+
         # Separator Line
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
@@ -276,6 +309,11 @@ class PlaybackControlBar(QWidget):
     def _on_speed_changed(self, index: int) -> None:
         speeds = [0.5, 1.0, 2.0, 0.0]
         self.speed_changed.emit(speeds[index])
+
+    def _on_scenario_changed(self, index: int) -> None:
+        scenarios = ["EVASIVE", "CT", "CV"]
+        if 0 <= index < len(scenarios):
+            self.scenario_selected.emit(scenarios[index])
 
     def _on_mode_radio_clicked(self, button: QRadioButton) -> None:
         if button == self.rb_mode_a:

@@ -122,20 +122,28 @@ class TacticalRadarDisplay(QWidget):
         self.plot_widget.addItem(pg.PlotCurveItem([-2000, 2000], [0, 0], pen=axis_pen))
         self.plot_widget.addItem(pg.PlotCurveItem([0, 0], [-2000, 2000], pen=axis_pen))
 
-        # Ownship UAV Marker at (0, 0)
+        # Ownship UAV Flight Path Curve & Marker
+        self.uav_track_item = pg.PlotCurveItem(
+            pen=pg.mkPen(color="#00B4D8", width=1.8, style=Qt.PenStyle.DotLine),
+        )
+        self.plot_widget.addItem(self.uav_track_item)
+
         self.ownship_marker = pg.ScatterPlotItem(
             [0.0], [0.0],
             symbol="t1",
-            size=13,
-            pen=pg.mkPen("#00B4D8", width=1.6),
-            brush=pg.mkBrush(0, 180, 216, 140),
+            size=14,
+            pen=pg.mkPen("#00B4D8", width=1.8),
+            brush=pg.mkBrush(0, 180, 216, 180),
         )
         self.plot_widget.addItem(self.ownship_marker)
 
-        uav_label = pg.TextItem("OWNSHIP [İHA-01]", color=QColor(56, 189, 248, 210), anchor=(0.5, -0.5))
-        uav_label.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
-        uav_label.setPos(0.0, 0.0)
-        self.plot_widget.addItem(uav_label)
+        self.uav_label = pg.TextItem("OWNSHIP [İHA-01]", color=QColor(56, 189, 248, 220), anchor=(0.5, -0.5))
+        self.uav_label.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+        self.uav_label.setPos(0.0, 0.0)
+        self.plot_widget.addItem(self.uav_label)
+        self._uav_east_hist: List[float] = []
+        self._uav_north_hist: List[float] = []
+        self._last_ts: float = -1.0
 
     def _init_dynamic_layers(self) -> None:
         """Initializes dynamic data curves and scatter layers."""
@@ -204,6 +212,20 @@ class TacticalRadarDisplay(QWidget):
         Updates radar layers with the current simulation frame.
         Note: In NED coordinates, x is North (plot Y), y is East (plot X).
         """
+        # 0. Update Moving Ownship UAV Position & Trail
+        uav_e = float(frame.uav_pos[1])
+        uav_n = float(frame.uav_pos[0])
+        if frame.timestamp <= 0.05 or frame.timestamp < self._last_ts:
+            self._uav_east_hist = [uav_e]
+            self._uav_north_hist = [uav_n]
+        else:
+            self._uav_east_hist.append(uav_e)
+            self._uav_north_hist.append(uav_n)
+        self._last_ts = frame.timestamp
+        self.uav_track_item.setData(self._uav_east_hist, self._uav_north_hist)
+        self.ownship_marker.setData([uav_e], [uav_n])
+        self.uav_label.setPos(uav_e, uav_n)
+
         # 1. Update Ground Truth Track
         if len(gt_history) > 0:
             east_gt = gt_history[:, 1]

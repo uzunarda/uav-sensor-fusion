@@ -98,6 +98,7 @@ class LiveRadarView(QWidget):
         self.control_bar.seek_requested.connect(self.worker.seek_time)
         self.control_bar.speed_changed.connect(self.worker.set_speed)
         self.control_bar.mode_selected.connect(self.worker.set_mode)
+        self.control_bar.scenario_selected.connect(lambda s: self.worker.set_scenario(s, uav_dynamic=True))
 
     def _on_frame_ready(
         self,
